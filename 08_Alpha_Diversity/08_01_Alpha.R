@@ -22,7 +22,10 @@ predicted_interactions <- predicted_interactions %>%
 raw_ints = read.csv("Data_Clean/Interactions/ints_final_clean_withCrops_slim.csv")
 
 raw_ints = raw_ints %>%
-  select(sourceTaxonName_harm, targetTaxonName_harm) %>%
+  select(sourceTaxonName_harm, interactionTypeName, targetTaxonName_harm) %>%
+  mutate(interactionTypeName = ifelse(interactionTypeName == "collectsPollenOf",
+                                      "visitsFlowersOf",
+                                      interactionTypeName)) %>%
   distinct()
 
 raw_ints$observedInteractionAnywhere = 1
@@ -253,6 +256,10 @@ alpha_all_poll$Sum <- rowSums(
   na.rm = TRUE
 )
 
+#remove all column
+alpha_all_poll = alpha_all_poll %>%
+  filter(pollinatorGroup != "all")
+
 
 ## Save
 #Summarized interactions
@@ -356,8 +363,34 @@ predicted_interactions <- predicted_interactions %>%
   # Clean up helper columns
   select(-lower_genus, -interactionTypeName_pollen)
 
+#Save all predicted Interactions with pollen categories separated
+write.csv(predicted_interactions, "Data_Calscape/Interactions/calscape_interactions_allPredicted_pollenSeparated.csv")
+
+#now remove pollen separation
+predicted_interactions = predicted_interactions %>%
+  mutate(interactionTypeName = ifelse(interactionTypeName %in% c("collectsPollenOf_general", "collectsPollenOf_specialist"),
+                                      "collectPollenOf",
+                                      interactionTypeName)) %>%
+  distinct()
+
+
+#Add estimates of how common the pollinators are seen visiting plants, for Calscape to show common representatives of each taxon
+pollRank = alpha_all_poll %>% 
+  select(region, pollinatorGroup, pollinatorSpecies, interactionTypeName, Sum) %>%
+  rename(JEPCODE = region,
+         taxon = pollinatorGroup,
+         higher = pollinatorSpecies) %>%
+  distinct() %>%
+  group_by(JEPCODE, taxon) %>%
+  mutate(pollRank = dense_rank(desc(Sum))) %>%
+  select(-Sum) %>%
+  ungroup()
+
+predicted_interactions = left_join(predicted_interactions, pollRank)
+
 #Save all predicted Interactions
 write.csv(predicted_interactions, "Data_Calscape/Interactions/calscape_interactions_allPredicted.csv")
+
 
 #Metadata
 #The only things that has changed since last time are: 
@@ -368,15 +401,18 @@ write.csv(predicted_interactions, "Data_Calscape/Interactions/calscape_interacti
 # Confirmed_General: When the region is one of the 35 Jepson ecoregions (not California), this column refers to interactions where the two interacting species co-occur spatially and temporally in the ecoregion, and we have a data point for the interaction, but that data point is not in the focal ecoregion. So in other words, the interaction itself is confirmed, we just don't know for sure that it occurs in this ecoregion. When the region = California, this column refers to all of the confirmed interactions that we have data points for (agnostic of ecoregion, since its at the state level)
 # Potential: All the predicted interactions from our model, that we don't have any raw data points for, but have high probability of occurring based on our modeling. 
 
-#(2) The interactionTypeName column, which used to have 2 levels (hasHost and visitsFlowersOf) now has 4 levels:
+#(2) The interactionTypeName column, which used to have 2 levels (hasHost and visitsFlowersOf) now has 3 levels:
 
 #hasHost: Lepidoptera (butterflies and moths) larvel host plant interactions
 #visitsFlowersOF: General flower visitation interactions across all taxa
+#collectsPollenOf: Pollen collection interactions
+
+# The "calscape_interactions_allPredicted_pollenSeparated.csv" file also has:
 #collectsPollenOf_general: General pollen collection interactions, which only applies to bees on our dataset. Note that some of the pollen collection interactions in this column may represent specialist (oligolectic) bee species, but we do not currently have confirmation for that in our dataset, and it is just as likely that they are non-specialized interactions 
 #collectsPollenOf_specialist: Pollen collection interactions involving specialist (oligolectic) bee species. These are the interactions we know, based on our data, are specific to these specialized bees. Note that pollen specialist bee species may still have visitsFlowersOf interactions, which may represent resource use outside of their pollen specialist plants (e.g., nectaring)
 
 # prepare separate dataset of just pollen specialist bees
-pollen = read.csv("Data_Calscape/Interactions/calscape_interactions_allPredicted.csv") %>%
+pollen = read.csv("Data_Calscape/Interactions/calscape_interactions_allPredicted_pollenSeparated.csv") %>%
   filter(interactionTypeName == "collectsPollenOf_specialist") %>%
   select(higher) %>%
   rename(pollinatorSpecies = higher) %>%
