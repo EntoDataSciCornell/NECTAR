@@ -129,7 +129,7 @@ int_observed_visitsFlowersOf <- interactions_regional %>%
   dplyr::select(sourceTaxonName_harm, targetTaxonName_harm, JEPCODE) %>% 
   mutate(observedInteraction = 1) %>%
   unique()
-  
+
 # Add in observed interactions to new columns
 predictions_visitsFlowersOf <- predictions_visitsFlowersOf %>%
   left_join(int_observed_visitsFlowersOf) %>%

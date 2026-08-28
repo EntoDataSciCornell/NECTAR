@@ -153,10 +153,10 @@ p2 <- alluvial_plot(interactions_full_tax_host,
                     panel_title = "Host Interactions",
                     source_levels = all_sources)
 
-combined_plot <- (p1 + theme(legend.position = "none")) + p2 + 
-  plot_layout(guides = "collect") +
-  plot_annotation() & 
-  theme(legend.position = "bottom")
+p1 <- p1 + theme(legend.position = "bottom")
+p2 <- p2 + theme(legend.position = "bottom")
+combined_plot <- (p1 + theme(legend.position = "none")) + p2 +
+  plot_layout(guides = "collect")
 
 # Save the combined plot
 ggsave("Figures/Supplementary/interactionNetworkRaw_combined_alluvial.png", 
@@ -233,6 +233,8 @@ phenology_filtered <- phenology %>%
 message(paste(length(names(plant_sdms_filtered)[names(plant_sdms_filtered) %in% phenology_filtered$genus_species]), "plant species ran SDMs+Pheno"))
 message(paste(length(names(pollinator_sdms_filtered)[names(pollinator_sdms_filtered) %in% phenology_filtered$genus_species]), "pollinator species ran SDMs+Pheno"))
 
+checklist_cleaned %>% filter(genus_species %in% names(pollinator_sdms_filtered)[names(pollinator_sdms_filtered) %in% phenology_filtered$genus_species]) %>% group_by(taxon) %>% summarise(n=n())
+
 ### Richness
 ## NOTE: Maybe update to only show richness for species with both sdms+pheno? Or maybe even only richness of sp. in our predicted interaction network?? Or both
 ## sum continuous probabilities to get estimated richness
@@ -251,6 +253,27 @@ plant_richness_plot <- ggplot() +
     mid = "#BAFF76",
     high = "#3B7004",
     name = "Expected\nPlant\nRichness",
+    midpoint = 250,
+    na.value = "white"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "right"
+  ) +
+  labs(x = NULL, y = NULL) +
+  coord_sf()
+
+pollinator_richness_plot <- ggplot() +
+  geom_spatraster(data = pollinator_richness) +
+  geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
+  scale_fill_gradient2(
+    low = "white",
+    mid = "#F9B753",
+    high = "#331E0F",
+    name = "Expected\nPollinator\nRichness",
     midpoint = 250,
     na.value = "white"
   ) +
@@ -392,7 +415,7 @@ sdmandpheno_completeness_species <- checklist_cleaned %>%
   distinct()
 
 write.csv(sdmandpheno_completeness_species, "Data_Clean/Analyses/checklist_SDMandPheno.csv")
-  
+
 
 
 data_completeness <- data_completeness_by_taxon %>%
@@ -749,7 +772,7 @@ predicted_interactions %>%
   filter(method_type != "Level3_GEOOSIS",
          sourceTaxonType != "hummingbirds") %>%
   select(targetTaxonName_harm, sourceTaxonName_harm, interactionTypeName) %>%
-    unique() %>%
+  unique() %>%
   group_by(interactionTypeName) %>%
   summarise(n= n())
 
@@ -810,6 +833,8 @@ message(paste(length(unique(ints_plants_CAsp_host$targetTaxonGenusName[ints_plan
 ints_full <- read.csv("Data_Clean/Interactions/ints_final_clean_full.csv")
 
 message(paste("Compiled", nrow(ints_full), "interaction records"))
+
+length(unique(c(ints_full$sourceTaxonName_harm, ints_full$targetTaxonName_harm)))
 
 # How many georeferenced?
 ints_with_geolocation <- ints_full %>%
@@ -965,6 +990,10 @@ panel_b <- ggplot(genera_data, aes(x = taxon, y = count, fill = category)) +
   theme(legend.position = "bottom") +
   labs(x = "Taxon", y = "Number of Genera", fill = "")
 
+legend <- get_legend(
+  panel_b + theme(legend.position = "bottom", legend.box.margin = margin(0, 0, 0, 0))
+)
+
 # Combine with shared legend at bottom
 combined_plot <- plot_grid(
   plot_grid(panel_a, panel_b, labels = c("A", "B"), nrow = 2),
@@ -1045,6 +1074,26 @@ ggplot(checklist_summary, aes(x = "", y = percentage, fill = category)) +
 
 ggsave("Figures/Supplementary/interaction_taxonomicScale_summary.png", width = 10, height = 6, dpi = 300)
 
+int_plantPol_unique <- interactions_full_tax %>% 
+  dplyr::select(sourceTaxonName_harm, targetTaxonName_harm) %>% 
+  unique()
+message(paste("Total of", dim(int_plantPol_unique)[1], "unique plant-pol pairs"))
+
+
+int_plantPol_speciesLevel_CA <- interactions_full_tax %>% 
+  mutate(sourceTaxonName_harm_sp = word(sourceTaxonName_harm,1,2),
+         targetTaxonName_harm_sp = word(targetTaxonName_harm,1,2)) %>%
+  filter(sourceTaxonName_harm_sp %in% checklist_cleaned$genus_species & 
+           targetTaxonName_harm_sp %in% checklist_cleaned$genus_species) %>%
+  dplyr::select(sourceTaxonName_harm_sp, targetTaxonName_harm_sp) %>% 
+  unique()
+message(paste("Total of", dim(int_plantPol_speciesLevel_CA)[1], "unqiue plant-pol pairs native to CA at sp level in raw int data"))
+
+int_plantPol_speciesLevel_CA %>%
+  left_join(checklist_cleaned, by = join_by(sourceTaxonName_harm_sp == "genus_species")) %>%
+  group_by(taxon) %>%
+  summarise(n=n())
+
 #### Predicted Interactions Summary ####
 # how many distinct plant-pol-region combos?
 predicted_interactions_plantpolregionCombos <- predicted_interactions %>% 
@@ -1061,42 +1110,254 @@ predicted_interactions %>%
   distinct() %>% 
   nrow()
 
-
 nrow(predicted_interactions_plantpolregionCombos)
-#### Plot spatial interaction records in CA ####
-# Filter interactions to those in CA
-interactions_CA <- interactions_spatial %>%
-  filter(lengths(st_intersects(., ecoregions)) > 0)
 
-# Create map
-ggplot() +
-  geom_sf(data = ecoregions, fill = "grey95", color = "black", linewidth = 0.3) +
-  geom_sf(data = interactions_CA, color = "darkblue", alpha = 0.6, size = 0.8) +
-  theme_void()
+predicted_interactions_plantpolregionCombos %>% 
+  left_join(checklist_cleaned, by = join_by("sourceTaxonName_harm" == "genus_species")) %>% 
+  group_by(taxon) %>% 
+  summarise(n=n())
 
-ggsave("Figures/Supplementary/interaction_map_CA.png", width = 8, height = 10, dpi = 300, bg = "white")
+# And for host
+# how many distinct plant-pol-region combos?
+predicted_interactions_plantpolregionCombos_hasHost <- predicted_interactions %>% 
+  filter(interactionTypeName == "hasHost") %>% 
+  dplyr::select(targetTaxonName_harm, sourceTaxonName_harm, JEPCODE) %>% 
+  distinct()
+
+nrow(predicted_interactions_plantpolregionCombos_hasHost)
+
+predicted_interactions_plantpolregionCombos_hasHost %>% 
+  left_join(checklist_cleaned, by = join_by("sourceTaxonName_harm" == "genus_species")) %>% 
+  group_by(taxon) %>% 
+  summarise(n=n())
+
+#### Metaweb degree vs. range size, raw occurrences, and raw interactions (flower visitation) ####
+metaweb_flowervisitation <- predicted_interactions %>%
+  filter(interactionTypeName == "visitsFlowersOf",
+         method_type %in% c("Level1_Simple", "Level2_GEOOS")) %>%
+  dplyr::select(sourceTaxonName_harm, targetTaxonName_harm) %>%
+  distinct()
+
+message(paste("Metaweb contains", nrow(metaweb_flowervisitation), "unique plant-pollinator pairs"))
+
+## Total predicted degree per species (flower visitation)
+pollinator_degree <- metaweb_flowervisitation %>%
+  group_by(sourceTaxonName_harm) %>%
+  summarise(degree = n_distinct(targetTaxonName_harm), .groups = "drop") %>%
+  rename(genus_species = sourceTaxonName_harm)
+
+plant_degree <- metaweb_flowervisitation %>%
+  group_by(targetTaxonName_harm) %>%
+  summarise(degree = n_distinct(sourceTaxonName_harm), .groups = "drop") %>%
+  rename(genus_species = targetTaxonName_harm)
+
+## Range size: sum of presence cells from binary SDMs
+plant_binary_files <- list.files("Data_Clean/SDMs/sdm_by_taxon/plants/binary",
+                                 pattern = "\\.tif$",
+                                 full.names = TRUE)
+
+plant_binary_files <- plant_binary_files[!grepl("manifest", plant_binary_files)]
+
+plant_sdms_binary <- rast(plant_binary_files)
+
+names(plant_sdms_binary) <- basename(plant_binary_files) %>%
+  gsub("\\_binary.tif$", "", .) %>%
+  gsub("_", " ", .)
+
+plant_sdms_binary_filtered <- plant_sdms_binary[[names(plant_sdms_binary) %in% plant_species_in_checklist]]
+all_pollinator_binary_files <- c()
+
+for (taxon in pollinator_folders) {
+  taxon_files <- list.files(
+    file.path("Data_Clean/SDMs/sdm_by_taxon", taxon, "binary"),
+    pattern = "\\.tif$",
+    full.names = TRUE
+  )
+  taxon_files <- taxon_files[!grepl("manifest", taxon_files)]
+  all_pollinator_binary_files <- c(all_pollinator_binary_files, taxon_files)
+}
+
+pollinator_sdms_binary <- rast(all_pollinator_binary_files)
+
+names(pollinator_sdms_binary) <- basename(all_pollinator_binary_files) %>%
+  gsub("\\_binary.tif$", "", .) %>%
+  gsub("_", " ", .)
+
+pollinator_sdms_binary_filtered <- pollinator_sdms_binary[[names(pollinator_sdms_binary) %in% pollinator_species_in_checklist]]
+
+plant_range_size <- terra::global(plant_sdms_binary_filtered, "sum", na.rm = TRUE) %>%
+  tibble::rownames_to_column("genus_species") %>%
+  rename(range_size = sum)
+
+pollinator_range_size <- terra::global(pollinator_sdms_binary_filtered, "sum", na.rm = TRUE) %>%
+  tibble::rownames_to_column("genus_species") %>%
+  rename(range_size = sum)
+
+## Total # raw occurrences per species
+occurrences_n <- occurrences %>%
+  filter(genus_species %in% checklist_cleaned$genus_species) %>%
+  count(genus_species, name = "n_occurrences")
+
+## Total # raw interactions per species (flower visitation)
+interactions_full_tax_nectar <- interactions_full_tax_nectar %>%
+  mutate(sourceTaxonName_harm_gsp = word(sourceTaxonName_harm, 1, 2),
+         targetTaxonName_harm_gsp = word(targetTaxonName_harm, 1, 2))
+
+pollinator_n_interactions <- interactions_full_tax_nectar %>%
+  count(sourceTaxonName_harm_gsp, name = "n_raw_interactions") %>%
+  rename(genus_species = sourceTaxonName_harm_gsp)
+
+plant_n_interactions <- interactions_full_tax_nectar %>%
+  count(targetTaxonName_harm_gsp, name = "n_raw_interactions") %>%
+  rename(genus_species = targetTaxonName_harm_gsp)
+
+## Combine into one table per taxon group
+pollinator_degree_data <- pollinator_degree %>%
+  left_join(pollinator_range_size, by = "genus_species") %>%
+  left_join(occurrences_n, by = "genus_species") %>%
+  left_join(pollinator_n_interactions, by = "genus_species") %>%
+  mutate(across(c(n_occurrences, n_raw_interactions), ~replace_na(., 0)))
+
+plant_degree_data <- plant_degree %>%
+  left_join(plant_range_size, by = "genus_species") %>%
+  left_join(occurrences_n, by = "genus_species") %>%
+  left_join(plant_n_interactions, by = "genus_species") %>%
+  mutate(across(c(n_occurrences, n_raw_interactions), ~replace_na(., 0)))
+
+pollinator_degree_data <- pollinator_degree_data %>% filter(!is.na(range_size))
+
+plant_degree_data <- plant_degree_data %>% filter(!is.na(range_size))
+
+## Scatterplot + intercept-forced-through-0 regression + correlation, for one x-y pair
+degree_scatter_plot <- function(data, x_var, y_var, x_lab, y_lab) {
+  plot_data <- data %>%
+    filter(!is.na(.data[[x_var]]), !is.na(.data[[y_var]]))
+  cor_val <- cor(plot_data[[x_var]], plot_data[[y_var]], method = "pearson")
+  ggplot(plot_data, aes(x = .data[[x_var]], y = .data[[y_var]])) +
+    geom_point(alpha = 0.6, size = 1.5) +
+    geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "black") +
+    annotate("text", x = -Inf, y = Inf, hjust = -0.1, vjust = 1.5,
+             label = paste0("r = ", round(cor_val, 2)), size = 3.5) +
+    labs(x = x_lab, y = y_lab) +
+    theme_cowplot(font_size = 10)
+}
+## Pollinator degree
+pollinator_degree_panels <- list(
+  degree_scatter_plot(pollinator_degree_data, "range_size", "degree",
+                      "Total Range Size (# cells)", "Predicted Pollinator Degree"),
+  degree_scatter_plot(pollinator_degree_data, "n_occurrences", "degree",
+                      "Total # Raw Occurrences", "Predicted Pollinator Degree"),
+  degree_scatter_plot(pollinator_degree_data, "n_raw_interactions", "degree",
+                      "Total # Raw Interactions", "Predicted Pollinator Degree")
+)
+
+pollinator_degree_plot <- wrap_plots(pollinator_degree_panels, nrow = 1) +
+  plot_annotation(tag_levels = "a")
+
+ggsave("Figures/network_metrics/pollinator_metaweb_degree_vs_datavolume.png",
+       pollinator_degree_plot, width = 15, height = 5, dpi = 300)
+
+## Plant degree: 3-panel plot
+plant_degree_panels <- list(
+  degree_scatter_plot(plant_degree_data, "range_size", "degree",
+                      "Total Range Size (# cells)", "Predicted Plant Degree"),
+  degree_scatter_plot(plant_degree_data, "n_occurrences", "degree",
+                      "Total # Raw Occurrences", "Predicted Plant Degree"),
+  degree_scatter_plot(plant_degree_data, "n_raw_interactions", "degree",
+                      "Total # Raw Interactions", "Predicted Plant Degree")
+)
+
+plant_degree_plot <- wrap_plots(plant_degree_panels, nrow = 1)  +
+  plot_annotation(tag_levels = "a")
+
+ggsave("Figures/network_metrics/plant_metaweb_degree_vs_datavolume.png",
+       plant_degree_plot, width = 15, height = 5, dpi = 300)
+
+#### Metaweb degree vs. range size, raw occurrences, and raw interactions (Lepidopteran host interactions) ####
+metaweb_hostinteractions <- predicted_interactions %>%
+  filter(interactionTypeName == "hasHost",
+         sourceTaxonType %in% c("moths", "butterflies")) %>%
+  dplyr::select(sourceTaxonName_harm, targetTaxonName_harm) %>%
+  distinct()
+message(paste("Host-interaction metaweb contains", nrow(metaweb_hostinteractions), "unique Lepidoptera-plant pairs"))
+
+## Total predicted degree per species (host interactions)
+lepidoptera_degree <- metaweb_hostinteractions %>%
+  group_by(sourceTaxonName_harm) %>%
+  summarise(degree = n_distinct(targetTaxonName_harm), .groups = "drop") %>%
+  rename(genus_species = sourceTaxonName_harm)
+
+hostplant_degree <- metaweb_hostinteractions %>%
+  group_by(targetTaxonName_harm) %>%
+  summarise(degree = n_distinct(sourceTaxonName_harm), .groups = "drop") %>%
+  rename(genus_species = targetTaxonName_harm)
+
+## Total # raw interactions per species (host interactions)
+interactions_full_tax_host <- interactions_full_tax_host %>%
+  mutate(sourceTaxonName_harm_gsp = word(sourceTaxonName_harm, 1, 2),
+         targetTaxonName_harm_gsp = word(targetTaxonName_harm, 1, 2))
+
+lepidoptera_n_interactions <- interactions_full_tax_host %>%
+  count(sourceTaxonName_harm_gsp, name = "n_raw_interactions") %>%
+  rename(genus_species = sourceTaxonName_harm_gsp)
+
+hostplant_n_interactions <- interactions_full_tax_host %>%
+  count(targetTaxonName_harm_gsp, name = "n_raw_interactions") %>%
+  rename(genus_species = targetTaxonName_harm_gsp)
+
+## Combine with range size (from binary SDMs) and raw occurrences
+lepidoptera_degree_data <- lepidoptera_degree %>%
+  left_join(pollinator_range_size, by = "genus_species") %>%
+  left_join(occurrences_n, by = "genus_species") %>%
+  left_join(lepidoptera_n_interactions, by = "genus_species") %>%
+  mutate(across(c(n_occurrences, n_raw_interactions), ~replace_na(., 0)))
+
+hostplant_degree_data <- hostplant_degree %>%
+  left_join(plant_range_size, by = "genus_species") %>%
+  left_join(occurrences_n, by = "genus_species") %>%
+  left_join(hostplant_n_interactions, by = "genus_species") %>%
+  mutate(across(c(n_occurrences, n_raw_interactions), ~replace_na(., 0)))
+
+lepidoptera_degree_data <- lepidoptera_degree_data %>% filter(!is.na(range_size))
+hostplant_degree_data <- hostplant_degree_data %>% filter(!is.na(range_size))
+
+## Lepidoptera degree
+lepidoptera_degree_panels <- list(
+  degree_scatter_plot(lepidoptera_degree_data, "range_size", "degree",
+                      "Total Range Size (# cells)", "Predicted Lepidoptera Degree (Host)"),
+  degree_scatter_plot(lepidoptera_degree_data, "n_occurrences", "degree",
+                      "Total # Raw Occurrences", "Predicted Lepidoptera Degree (Host)"),
+  degree_scatter_plot(lepidoptera_degree_data, "n_raw_interactions", "degree",
+                      "Total # Raw Interactions", "Predicted Lepidoptera Degree (Host)")
+)
+
+lepidoptera_degree_plot <- wrap_plots(lepidoptera_degree_panels, nrow = 1)  +
+  plot_annotation(tag_levels = "a")
+
+ggsave("Figures/network_metrics/lepidoptera_metaweb_degree_vs_datavolume_host.png",
+       lepidoptera_degree_plot, width = 15, height = 5, dpi = 300)
+
+## Host plant degree
+hostplant_degree_panels <- list(
+  degree_scatter_plot(hostplant_degree_data, "range_size", "degree",
+                      "Total Range Size (# cells)", "Predicted Host Plant Degree"),
+  degree_scatter_plot(hostplant_degree_data, "n_occurrences", "degree",
+                      "Total # Raw Occurrences", "Predicted Host Plant Degree"),
+  degree_scatter_plot(hostplant_degree_data, "n_raw_interactions", "degree",
+                      "Total # Raw Interactions", "Predicted Host Plant Degree")
+)
+
+hostplant_degree_plot <- wrap_plots(hostplant_degree_panels, nrow = 1)  +
+  plot_annotation(tag_levels = "a")
+
+ggsave("Figures/network_metrics/plant_metaweb_degree_vs_datavolume_host.png",
+       hostplant_degree_plot, width = 15, height = 5, dpi = 300)
 
 #### Calculate network metrics by ecoregion (all taxa combined) ####
-# Get unique ecoregions
-ecoregions_list <- unique(predicted_interactions$JEPCODE)
-
-# Define taxa groups
-taxa_groups <- c("bees", "hoverflies", "moths", "butterflies")
-
-# Initialize results - now with a taxa column
-network_metrics_results <- data.frame()
-
-print("Network properties")
-
-for(eco in ecoregions_list) {
-  message(paste("Processing", eco))
+compute_network_metrics_by_ecoregion <- function(interaction_data, taxa_groups, all_label = "All") {
   
-  eco_data <- predicted_interactions %>% 
-    filter(JEPCODE == eco,
-           method_type %in% c("Level1_Simple", "Level2_GEOOS"),
-           interactionTypeName == "visitsFlowersOf")
-  
-  if(nrow(eco_data) < 3) next
+  ecoregions_list <- unique(interaction_data$JEPCODE)
+  network_metrics_results <- data.frame()
   
   # function for compute metrics from filtered dataset
   compute_metrics <- function(df, ecoregion_name, taxa_label) {
@@ -1118,11 +1379,6 @@ for(eco in ecoregions_list) {
       # Mean degree (avg number of plant partners per pollinator)
       mean_degree     <- mean(rowSums(mat > 0))
       
-      # Modularity
-      # mod_val         <- tryCatch({
-      #   computeModules(mat)@likelihood  # @likelihood stores the modularity Q value
-      # }, error = function(e) NA_real_)
-      
       data.frame(
         ecoregion       = ecoregion_name,
         taxa            = taxa_label,
@@ -1132,7 +1388,6 @@ for(eco in ecoregions_list) {
         connectance     = connectance,
         nestedness_nodf = nodf_val,
         mean_degree     = mean_degree
-        # modularity      = mod_val
       )
     }, error = function(e) {
       message(paste("Error in", ecoregion_name, taxa_label, ":", e$message))
@@ -1140,40 +1395,67 @@ for(eco in ecoregions_list) {
     })
   }
   
-  ## Whole community
-  metrics_all <- compute_metrics(eco_data, eco, "All")
+  print("Network properties")
+  for(eco in ecoregions_list) {
+    message(paste("Processing", eco))
+    
+    eco_data <- interaction_data %>% filter(JEPCODE == eco)
+    
+    if(nrow(eco_data) < 3) next
+    
+    ## Whole community (all taxa passed to this function)
+    metrics_all <- compute_metrics(eco_data, eco, all_label)
+    
+    ## By taxa group
+    metrics_taxa <- taxa_groups %>%
+      purrr::map(function(tx) {
+        tx_data <- eco_data %>% filter(sourceTaxonType == tx)
+        compute_metrics(tx_data, eco, tx)
+      })
+    
+    network_metrics_results <- bind_rows(
+      network_metrics_results,
+      metrics_all,
+      metrics_taxa
+    )
+  }
   
-  ## By taxa group
-  metrics_taxa <- taxa_groups %>%
-    purrr::map(function(tx) {
-      tx_data <- eco_data %>% filter(sourceTaxonType == tx)
-      compute_metrics(tx_data, eco, tx)
-    })
-  
-  # Combine and append
-  network_metrics_results <- bind_rows(
-    network_metrics_results,
-    metrics_all,
-    metrics_taxa
-  )
+  return(network_metrics_results)
 }
 
+## Flower visitation, all pollinator taxa 
+network_metrics_results <- compute_network_metrics_by_ecoregion(
+  interaction_data = predicted_interactions %>%
+    filter(method_type %in% c("Level1_Simple", "Level2_GEOOS"),
+           interactionTypeName == "visitsFlowersOf"),
+  taxa_groups = c("bees", "hoverflies", "moths", "butterflies")
+)
 saveRDS(network_metrics_results, "Data_Clean/Analyses/network_metrics_results.rds")
+
+## Lepidopteran host interactions only (moths + butterflies)
+network_metrics_results_hostLepidoptera <- compute_network_metrics_by_ecoregion(
+  interaction_data = predicted_interactions %>%
+    filter(interactionTypeName == "hasHost",
+           sourceTaxonType %in% c("moths", "butterflies")),
+  taxa_groups = c("moths", "butterflies"),
+  all_label = "Lepidoptera Host Use"
+)
+
+saveRDS(network_metrics_results_hostLepidoptera, "Data_Clean/Analyses/network_metrics_results_hostLepidoptera.rds")
 
 ##### Analyze network metrics // specialization across space #####
 network_metrics_results <- readRDS("Data_Clean/Analyses/network_metrics_results.rds")
+network_metrics_results_hostLepidoptera <- readRDS("Data_Clean/Analyses/network_metrics_results_hostLepidoptera.rds")
 
 ## Define metrics to plot
 metrics_to_plot <- list(
   connectance     = "Connectance",
   nestedness_nodf = "Nestedness\n(NODF)",
   mean_degree     = "Mean\nDegree"
-  # modularity      = "Modularity"
 )
 
-
 # Map function
-make_eco_map <- function(data_filtered, metric_col, metric_name, panel_title, 
+make_eco_map <- function(data_filtered, metric_col, metric_name, panel_title,
                          shared_limits = NULL, show_legend = TRUE, use_log = FALSE) {
   
   plot_data <- ecoregions %>%
@@ -1221,72 +1503,255 @@ make_eco_map <- function(data_filtered, metric_col, metric_name, panel_title,
   return(p)
 }
 
-## Main loop - produce one output file per network metric
-iwalk(metrics_to_plot, function(metric_name, metric_col) {
+## Produce one output file per network metric, for a given results table/taxa set
+plot_network_metric_maps <- function(network_metrics_results, taxa_groups, all_label = "All",
+                                     output_suffix = "") {
   
-  message("Processing: ", metric_col)
-  
-  use_log <- metric_col == "nestedness_nodf"
-  
-  all_vals <- network_metrics_results %>%
-    filter(!is.na(.data[[metric_col]]), .data[[metric_col]] > 0) %>%  # guard against log(0)
-    pull(.data[[metric_col]])
-  
-  shared_limits <- range(all_vals, na.rm = TRUE)
-  
-  df_all <- network_metrics_results %>% filter(taxa == "All")
-  
-  p_all <- make_eco_map(
-    data_filtered = df_all,
-    metric_col    = metric_col,
-    metric_name   = metric_name,
-    panel_title   = "All Taxa",
-    shared_limits = shared_limits,
-    show_legend   = TRUE,
-    use_log       = use_log
-  )
-  
-  taxa_maps <- map(taxa_groups, function(tx) {
-    df_tx <- network_metrics_results %>% filter(taxa == tx)
+  iwalk(metrics_to_plot, function(metric_name, metric_col) {
     
-    make_eco_map(
-      data_filtered = df_tx,
+    message("Processing: ", metric_col, output_suffix)
+    
+    use_log <- metric_col == "nestedness_nodf"
+    
+    all_vals <- network_metrics_results %>%
+      filter(!is.na(.data[[metric_col]]), .data[[metric_col]] > 0) %>%  # guard against log(0)
+      pull(.data[[metric_col]])
+    
+    shared_limits <- range(all_vals, na.rm = TRUE)
+    
+    df_all <- network_metrics_results %>% filter(taxa == all_label)
+    
+    p_all <- make_eco_map(
+      data_filtered = df_all,
       metric_col    = metric_col,
       metric_name   = metric_name,
-      panel_title   = tx,
+      panel_title   = all_label,
       shared_limits = shared_limits,
-      show_legend   = FALSE,
+      show_legend   = TRUE,
       use_log       = use_log
     )
-  })
-  
-  bottom_row <- wrap_plots(taxa_maps, nrow = 1) +
-    plot_layout(guides = "collect")
-  
-  final_plot <- p_all / bottom_row +
-    plot_layout(heights = c(2, 1)) +
-    plot_annotation(
-      theme = theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5))
+    
+    taxa_maps <- map(taxa_groups, function(tx) {
+      df_tx <- network_metrics_results %>% filter(taxa == tx)
+      
+      make_eco_map(
+        data_filtered = df_tx,
+        metric_col    = metric_col,
+        metric_name   = metric_name,
+        panel_title   = tx,
+        shared_limits = shared_limits,
+        show_legend   = FALSE,
+        use_log       = use_log
+      )
+    })
+    
+    bottom_row <- wrap_plots(taxa_maps, nrow = 1) +
+      plot_layout(guides = "collect")
+    
+    final_plot <- p_all / bottom_row +
+      plot_layout(heights = c(2, 1)) +
+      plot_annotation(
+        theme = theme(plot.title = element_text(size = 13, face = "bold", hjust = 0.5))
+      )
+    
+    ggsave(
+      filename = paste0("Figures/network_metrics/ecoregion_", metric_col, "_by_taxon", output_suffix, ".png"),
+      plot     = final_plot,
+      width    = 10,
+      height   = 8,
+      dpi      = 300
     )
-  
-  ggsave(
-    filename = paste0("Figures/network_metrics/ecoregion_", metric_col, "_by_taxon.png"),
-    plot     = final_plot,
-    width    = 10,
-    height   = 8,
-    dpi      = 300
-  )
-  
-  cat("Saved:", metric_col, "\n")
-})
+    
+    cat("Saved:", metric_col, output_suffix, "\n")
+  })
+}
 
+## Flower visitation maps
+plot_network_metric_maps(
+  network_metrics_results,
+  taxa_groups = c("bees", "hoverflies", "moths", "butterflies"),
+  all_label = "All",
+  output_suffix = ""
+)
 
-#### Plot plant and pollinator diversity across space
-a <- sp_by_region
+## Lepidopteran host interaction maps
+plot_network_metric_maps(
+  network_metrics_results_hostLepidoptera,
+  taxa_groups = c("moths", "butterflies"),
+  all_label = "Lepidopteran Host Use",
+  output_suffix = "_hostLepidoptera"
+)
 
 #### Mean pairwise species and interaction dissimilarity across regions ####
-### Load data
-# Select only the columns we need
+compute_beta_diversity_by_ecoregion <- function(int_data_long, output_suffix = "",
+                                                midpoint_WN = 0.75, midpoint_ST = 0.75,
+                                                midpoint_OS = 0.1) {
+  
+  # jepcodes
+  regions <- unique(int_data_long$region)
+  
+  ### Convert to network matrices
+  network_list <- list()
+  for (r in regions) {
+    
+    cat("Processing region:", r, "\n")
+    
+    region_data <- int_data_long %>%
+      filter(region == r)
+    
+    plants <- sort(unique(region_data$plant))
+    pollinators <- sort(unique(region_data$pollinator))
+    
+    mat <- matrix(0,
+                  nrow = length(plants),
+                  ncol = length(pollinators),
+                  dimnames = list(plants, pollinators))
+    
+    for (i in 1:nrow(region_data)) {
+      plant_name <- region_data$plant[i]
+      pollinator_name <- region_data$pollinator[i]
+      mat[plant_name, pollinator_name] <- 1
+    }
+    
+    network_list[[r]] <- mat
+  }
+  
+  ### append regional matrices to make array
+  all_plants <- sort(unique(unlist(lapply(network_list, rownames))))
+  all_pollinators <- sort(unique(unlist(lapply(network_list, colnames))))
+  cat("Total unique plants across all regions:", length(all_plants), "\n")
+  cat("Total unique pollinators across all regions:", length(all_pollinators), "\n")
+  
+  n_regions <- length(network_list)
+  webarray <- array(0,
+                    dim = c(length(all_plants), length(all_pollinators), n_regions),
+                    dimnames = list(all_plants, all_pollinators, names(network_list)))
+  
+  for (i in 1:n_regions) {
+    region_name <- names(network_list)[i]
+    mat <- network_list[[i]]
+    webarray[rownames(mat), colnames(mat), i] <- mat
+  }
+  cat("Array dimensions:", dim(webarray), "(plants x pollinators x regions)\n")
+  
+  ### Calculate network dissimilarity
+  results_commondenom <- betalinkr_multi(
+    webarray = webarray,
+    partitioning = "commondenom",
+    binary = TRUE,
+    index = "sorensen",
+    distofempty = "zero"
+  )
+  saveRDS(results_commondenom, paste0("Data_Clean/Analyses/results_commondenom", output_suffix, ".rds"))
+  
+  ### average results across regions (mean per region)
+  region_averages <- results_commondenom %>%
+    pivot_longer(cols = c(i, j),
+                 names_to = "position",
+                 values_to = "region") %>%
+    group_by(region) %>%
+    summarise(
+      mean_beta_WN = mean(WN),
+      mean_beta_OS = mean(OS),
+      mean_beta_ST = mean(ST),
+      mean_prop_rewiring = mean(OS / WN),
+      mean_prop_turnover = mean(ST / WN),
+      n_comparisons = n()
+    )
+  
+  ecoregions_beta <- ecoregions %>%
+    left_join(region_averages, by = join_by("JEPCODE" == "region"))
+  
+  ### WN - network dissimilarity
+  beta_WN_plot <- ggplot() +
+    geom_sf(data = ecoregions_beta, aes(fill = mean_beta_WN), color = NA) +
+    geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
+    scale_fill_gradient2(
+      low = "white",
+      mid = "#F9B753",
+      high = "#331E0F",
+      midpoint = midpoint_WN,
+      name = "Mean\nNetwork\nDissimilarity",
+      na.value = "grey90"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "right"
+    ) +
+    labs(x = NULL, y = NULL) +
+    coord_sf()
+  ggsave(paste0("Figures/networks/beta_WN", output_suffix, ".pdf"),
+         plot = beta_WN_plot,
+         width = 200,
+         height = 100,
+         units = "mm",
+         dpi = 2000)
+  
+  ### beta ST - Species turnover
+  beta_ST_plot <- ggplot() +
+    geom_sf(data = ecoregions_beta, aes(fill = mean_beta_ST), color = NA) +
+    geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
+    scale_fill_gradient2(
+      low = "white",
+      mid = "#F9B753",
+      high = "#331E0F",
+      midpoint = midpoint_ST,
+      name = "Contribution of\nSpecies Turnover",
+      na.value = "grey90"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "right"
+    ) +
+    labs(x = NULL, y = NULL) +
+    coord_sf()
+  ggsave(paste0("Figures/networks/beta_ST", output_suffix, ".pdf"),
+         plot = beta_ST_plot,
+         width = 200,
+         height = 100,
+         units = "mm",
+         dpi = 2000)
+  
+  ### beta OS - interaction rewiring
+  beta_OS_plot <- ggplot() +
+    geom_sf(data = ecoregions_beta, aes(fill = mean_beta_OS), color = NA) +
+    geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
+    scale_fill_gradient2(
+      low = "white",
+      mid = "#F9B753",
+      high = "#331E0F",
+      midpoint = midpoint_OS,
+      name = "Contribution of\nInteraction Rewiring",
+      na.value = "grey90"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text = element_blank(),
+      axis.ticks = element_blank(),
+      panel.grid = element_blank(),
+      legend.position = "right"
+    ) +
+    labs(x = NULL, y = NULL) +
+    coord_sf()
+  ggsave(paste0("Figures/networks/beta_OS", output_suffix, ".pdf"),
+         plot = beta_OS_plot,
+         width = 200,
+         height = 100,
+         units = "mm",
+         dpi = 2000)
+  
+  return(list(results_commondenom = results_commondenom,
+              region_averages = region_averages,
+              plots = list(WN = beta_WN_plot, ST = beta_ST_plot, OS = beta_OS_plot)))
+}
+
+## Flower visitation
 int_data_long <- predicted_interactions %>%
   filter(method_type %in% c("Level1_Simple", "Level2_GEOOS"),
          interactionTypeName == "visitsFlowersOf") %>%
@@ -1296,196 +1761,25 @@ int_data_long <- predicted_interactions %>%
     region = JEPCODE
   )
 
-# jepcodes
-regions <- unique(int_data_long$region)
-
-### Convert to network matrices
-# Create an empty list to store network matrices
-network_list <- list()
-
-# Loop through each region and create a matrix
-for (r in regions) {
-  
-  cat("Processing region:", r, "\n")
-  
-  # Filter data for this region
-  region_data <- int_data_long %>% 
-    filter(region == r)
-  
-  # Get unique species lists (sorted for consistency)
-  plants <- sort(unique(region_data$plant))
-  pollinators <- sort(unique(region_data$pollinator))
-  
-  # Create empty matrix (rows = plants, columns = pollinators)
-  mat <- matrix(0, 
-                nrow = length(plants), 
-                ncol = length(pollinators),
-                dimnames = list(plants, pollinators))
-  
-  # Fill matrix with interactions (presence = 1)
-  for (i in 1:nrow(region_data)) {
-    plant_name <- region_data$plant[i]
-    pollinator_name <- region_data$pollinator[i]
-    mat[plant_name, pollinator_name] <- 1
-  }
-  
-  # Store in list
-  network_list[[r]] <- mat
-}
-
-### append regional matrices to make array
-# Get all unique species across ALL networks
-all_plants <- sort(unique(unlist(lapply(network_list, rownames))))
-all_pollinators <- sort(unique(unlist(lapply(network_list, colnames))))
-
-cat("Total unique plants across all regions:", length(all_plants), "\n")
-cat("Total unique pollinators across all regions:", length(all_pollinators), "\n")
-
-# Create 3D array: plants x pollinators x regions
-n_regions <- length(network_list)
-webarray <- array(0, 
-                  dim = c(length(all_plants), length(all_pollinators), n_regions),
-                  dimnames = list(all_plants, all_pollinators, names(network_list)))
-
-# Fill array with data from each network
-for (i in 1:n_regions) {
-  region_name <- names(network_list)[i]
-  mat <- network_list[[i]]
-  
-  # Insert this network's data into the correct slice of the array
-  webarray[rownames(mat), colnames(mat), i] <- mat
-}
-
-cat("Array dimensions:", dim(webarray), "(plants x pollinators x regions)\n")
-
-### Calculate network dissimilarity
-# Calculate all pairwise dissimilarities
-results_commondenom <- betalinkr_multi(
-  webarray = webarray,
-  partitioning = "commondenom",
-  binary = TRUE,
-  index = "sorensen",
-  distofempty = "zero"
+beta_diversity_flowervisitation <- compute_beta_diversity_by_ecoregion(
+  int_data_long,
+  output_suffix = ""
 )
 
-saveRDS(results_commondenom, "Data_Clean/Analyses/results_commondenom.rds")
-
-### average results across regions (mean per region)
-region_averages <- results_commondenom %>%
-  # Gather both region1 and region2
-  pivot_longer(cols = c(i, j), 
-               names_to = "position", 
-               values_to = "region") %>%
-  group_by(region) %>%
-  summarise(
-    mean_beta_WN = mean(WN),
-    mean_beta_OS = mean(OS),
-    mean_beta_ST = mean(ST),
-    mean_prop_rewiring = mean(OS / WN),
-    mean_prop_turnover = mean(ST / WN),
-    n_comparisons = n()
+## Lepidopteran host interactions  
+int_data_long_host <- predicted_interactions %>%
+  filter(interactionTypeName == "hasHost",
+         sourceTaxonType %in% c("moths", "butterflies")) %>%
+  dplyr::select(
+    plant = targetTaxonName_harm,
+    pollinator = sourceTaxonName_harm,
+    region = JEPCODE
   )
 
-ecoregions_beta <- ecoregions %>%
-  left_join(region_averages, by = join_by("JEPCODE" == "region"))
-
-
-### WN - network dissimilarity
-beta_WN_plot <- ggplot() +
-  geom_sf(data = ecoregions_beta, aes(fill = mean_beta_WN), color = NA) +
-  geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
-  scale_fill_gradient2(
-    low = "white",
-    mid = "#F9B753",
-    high = "#331E0F",
-    midpoint = 0.75,  # or choose a specific value
-    name = "Mean\nNetwork\nDissimilarity",
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(
-    axis.text = element_blank(),
-    axis.ticks = element_blank(),
-    panel.grid = element_blank(),
-    legend.position = "right"
-  ) +
-  labs(
-    x = NULL, 
-    y = NULL
-  ) +
-  coord_sf()
-
-ggsave("Figures/networks/beta_WN.pdf", 
-       plot = beta_WN_plot,
-       width = 200, 
-       height = 100, 
-       units = "mm",
-       dpi = 2000)
-
-### beta ST - Species turnover
-beta_ST_plot <- ggplot() +
-  geom_sf(data = ecoregions_beta, aes(fill = mean_beta_ST), color = NA) +
-  geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
-  scale_fill_gradient2(
-    low = "white",
-    mid = "#F9B753",
-    high = "#331E0F",
-    midpoint = 0.75,  # or choose a specific value
-    name = "Contribution of\nSpecies Turnover",
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(
-    axis.text = element_blank(),
-    axis.ticks = element_blank(),
-    panel.grid = element_blank(),
-    legend.position = "right"
-  ) +
-  labs(
-    x = NULL, 
-    y = NULL
-  ) +
-  coord_sf()
-
-ggsave("Figures/networks/beta_ST.pdf", 
-       plot = beta_ST_plot,
-       width = 200, 
-       height = 100, 
-       units = "mm",
-       dpi = 2000)
-
-### beta OS - interaction rewiring
-beta_OS_plot <- ggplot() +
-  geom_sf(data = ecoregions_beta, aes(fill = mean_beta_OS), color = NA) +
-  geom_sf(data = ecoregions_boundary, fill = NA, color = "black", linewidth = 1) +
-  scale_fill_gradient2(
-    low = "white",
-    mid = "#F9B753",
-    high = "#331E0F",
-    midpoint = 0.1,  # or choose a specific value
-    name = "Contribution of\nInteraction Rewiring",
-    na.value = "grey90"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(
-    axis.text = element_blank(),
-    axis.ticks = element_blank(),
-    panel.grid = element_blank(),
-    legend.position = "right"
-  ) +
-  labs(
-    x = NULL, 
-    y = NULL
-  ) +
-  coord_sf()
-
-ggsave("Figures/networks/beta_OS.pdf", 
-       plot = beta_OS_plot,
-       width = 200, 
-       height = 100, 
-       units = "mm",
-       dpi = 2000)
-
+beta_diversity_hostLepidoptera <- compute_beta_diversity_by_ecoregion(
+  int_data_long_host,
+  output_suffix = "_hostLepidoptera"
+)
 
 ##### Plot Xerces digitized boundaries ####
 xerces_regions <- xerces_regions %>%

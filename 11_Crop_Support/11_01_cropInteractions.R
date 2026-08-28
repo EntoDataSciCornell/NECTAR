@@ -11,10 +11,10 @@
 library(tidyverse)
 
 #load all final predicted interactions (exluding crops)
-allInts = read.csv("/Users/chriscosma/Desktop/calscape_2.26/output/calscape_interactions_allPredicted.csv")
+allInts = read.csv("Data_Calscape/Interactions/calscape_interactions_allPredicted.csv")
 
 #load intermediate dataset that includes crop interactions (note that it does not matter that the plant names have not been standardized back to the Calscape names, because we are not using native plants here.)
-cropInts = read.csv("/Users/chriscosma/Desktop/calscape_2.26/input/ints_final_clean_withCrops_slim.csv")
+cropInts = read.csv("Data_Clean/Interactions/ints_final_clean_withCrops_slim.csv")
 
 #isolate all crop interactions, and keep only flower visitation
 cropInts = filter(cropInts, isCrop == "yes" & interactionTypeName %in% c("visitsFlowersOf", "collectsPollenOf"))
@@ -25,7 +25,7 @@ cropInts = cropInts %>%
   rename(
     lower = targetTaxonName_harm,
     higher =sourceTaxonName_harm
-    ) %>%
+  ) %>%
   distinct()
 
 #filter out non animal-pollinated crops (these were the only two that Claude identified as having absolutely no evidence of benefit from insects for fruit/seed production)
@@ -54,23 +54,19 @@ ints$region = "California"
 #join ecoregion and state level
 cropInts = rbind(cropInts, ints)
 
-setwd("/Users/chriscosma/Desktop/calscape_2.26/output")
-write.csv(cropInts, "calscape_interactions_crops.csv")
+write.csv(cropInts, "Data_Calscape/Interactions/calscape_interactions_crops.csv")
 
 #### Part 2: Generate crop support plant dataset ####
 ##create ecoregion by crop lists of native support plants
-
-#wd
-setwd("/Users/chriscosma/Desktop/calscape_2.26/output")
 
 #packages
 library(tidyverse)
 
 #load crop interactions
-cropInts = read.csv("calscape_interactions_crops.csv")
+cropInts = read.csv("Data_Calscape/Interactions/calscape_interactions_crops.csv")
 
 #load native plant interactions (harmonized to Calscape names)
-nativeInts = read.csv('calscape_interactions_allPredicted.csv')
+nativeInts = read.csv('Data_Calscape/Interactions/calscape_interactions_allPredicted.csv')
 
 #rename ecoregion column
 names(nativeInts)[2] = "region"
@@ -80,7 +76,8 @@ nativeInts <- nativeInts %>%
   mutate(
     interactionTypeName = ifelse(
       interactionTypeName %in% c("collectsPollenOf_specialist",
-                                 "collectsPollenOf_general"),
+                                 "collectsPollenOf_general",
+                                 "collectsPollenOf"),
       "visitsFlowersOf",
       interactionTypeName
     )
@@ -155,7 +152,7 @@ for (i in 1:length(eco)) {
     
     #add region information
     alpha$region = eco[[i]]
-   
+    
     #add crop latin name
     alpha$cropLatinName = crops[[j]]
     
@@ -207,8 +204,7 @@ calscape_cropSupportPlants20$sum = NULL
 names(calscape_cropSupportPlants20)[c(5,6)] = c("nativeSupportPlant", "cropPollinatorsSupported")
 
 #save final dataset
-setwd("/Users/chriscosma/Desktop/calscape_2.26/output")
-write.csv(calscape_cropSupportPlants20, "calscape_cropSupportPlants20.csv")
+write.csv(calscape_cropSupportPlants20, "Data_Calscape/Crop_Support/calscape_cropSupportPlants20.csv")
 
 
 

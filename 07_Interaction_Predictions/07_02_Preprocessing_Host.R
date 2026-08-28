@@ -22,7 +22,7 @@ for (taxon in taxon_folders) {
   
   # Build path to continuous sdm folder
   continuous_path <- file.path(base_path, taxon, "continuous")
-    
+  
   # Get all files in continuous folder
   all_files <- list.files(continuous_path, pattern = "\\.tif$", full.names = FALSE)
   
@@ -83,7 +83,7 @@ ints_pol_plantgenera <- ints %>%
 # now filter for only plant genera and pol species in checklist
 ints_pol_plantgenera_checklist <- ints_pol_plantgenera %>%
   filter(sourceTaxonName_harm %in% checklist_prediction$genus_species[checklist_prediction$taxon != "plants"] &
-         targetTaxonGenusName %in% checklist_prediction$genus[checklist_prediction$taxon == "plants"]) %>%
+           targetTaxonGenusName %in% checklist_prediction$genus[checklist_prediction$taxon == "plants"]) %>%
   unique()
 
 # now expand for all plant species in each genus to get pairwise species we want to predict over
@@ -230,7 +230,7 @@ process_chunk_spatialOverlap <- function(row_ids) {
     # Check if both species have SDMs
     if (pollinator_sp %in% names(pollinator_sdms) && 
         plant_sp %in% names(plant_sdms)) {
-
+      
       # Get individual SDMs
       pol_sdm <- pollinator_sdms[[pollinator_sp]]
       plant_sdm <- plant_sdms[[plant_sp]]

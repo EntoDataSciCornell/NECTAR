@@ -183,7 +183,7 @@ scen0_supportByRegion <- scenario0_taxon_summary %>%
   summarise(total_in_region = sum(total_in_region),
             supported_by_mix = sum(supported_by_mix)) %>%
   mutate(perc_supported = supported_by_mix/total_in_region*100) 
-  
+
 
 ## Plot
 prepare_pollinator_plot_data <- function(ecoregion_code, 
@@ -340,7 +340,7 @@ focalPollinators_scenario1 <- checklist_cleaned %>%
   filter(taxon %in% c("bees", "butterflies", "moths", "hoverflies"))
 
 scenario1_results_list <- mclapply(unique(ecoregions$JEPCODE), function(ecoregion) {
-  find_topMix(
+  find_top_mix(
     ecoregion, 
     interaction_data_subset = filter(predicted_interactions, interactionTypeName == "visitsFlowersOf"),
     candidate_plants = unique(plantCandidates_scenario1$scientificName),
@@ -630,42 +630,42 @@ plantCandidates_scenario2 <- calscape_plant_data %>%
 # focal pollinators
 # we will use Jarrod Fowler's specialist bee list to identify species that are oligolectic, and what their known/presumed host plants are
 # but we'll use out spatially explicit flower visitation interaction network ("force" flower visitation to pollen collection for known host plants of oligoleges)
-jarrodFowler_oligoleges <- read.csv("Data_Raw/Interactions/JarrodFowler/jarrodFowler_scraped_interactions.csv") %>%
+jarrodFowler_oligoleges <- read.csv("Data_Raw/Interactions/fowler/jarrodFowler_scraped_interactions.csv") %>%
   rename(sourceTaxonName = higher,
          targetTaxonName = lower)
 
 ## Harmonize scientific Names
 # Load harmonization functions
 source("Code/99_Supporting/name_harmonization.R")
+# gnvpath
+gnverifier_path <- "/home/tb625/bin"
 
-# 1. names
+# 1. Clean raw names
 oligolege_names <- unique(jarrodFowler_oligoleges$sourceTaxonName)
-plantInt_names <- unique(jarrodFowler_oligoleges$targetTaxonName)
+plantInt_names  <- unique(jarrodFowler_oligoleges$targetTaxonName)
 
 names_oligolege_parsed <- bdc_clean_names(sci_names = oligolege_names, save_outputs = FALSE)
-names_plantInt_parsed <- bdc_clean_names(sci_names = plantInt_names, save_outputs = FALSE)
+names_plantInt_parsed  <- bdc_clean_names(sci_names = plantInt_names, save_outputs = FALSE)
 
-# 2. Send names to gnverifier
-names_harm_oligolege <- names_harmonize(unique(names_oligolege_parsed$names_clean), 
-                                        names_file = "Temp/names_oligoleges.tsv", 
-                                        names_harm_file = "Temp/names_harmonized_oligoleges.tsv",
-                                        gnv_path = "/home/tb625/bin/")
-names_harm_plantInts <- names_harmonize(unique(names_plantInt_parsed$names_clean), 
-                                        names_file = "Temp/names_plantInts.tsv", 
-                                        names_harm_file = "Temp/names_harmonized_plantInts.tsv",
-                                        gnv_path = "/home/tb625/bin/")
+# 2. Harmonize names (bees = Hymenoptera, plants = Plantae)
+names_harm_oligolege <- harmonize_names(
+  names = unique(names_oligolege_parsed$names_clean),
+  higher_tax = "Hymenoptera",
+  names_file = "Temp/names_oligoleges.tsv",
+  names_harm_file = "Temp/names_harmonized_oligoleges.tsv",
+  gnv_path = gnverifier_path
+)
+names_harm_plantInts <- harmonize_names(
+  names = unique(names_plantInt_parsed$names_clean),
+  higher_tax = "Plantae",
+  names_file = "Temp/names_plantInts.tsv",
+  names_harm_file = "Temp/names_harmonized_plantInts.tsv",
+  gnv_path = gnverifier_path
+)
 
-# 3. Choose best match
-names_harm_select_oligolege <- names_choose(names_harm_oligolege, higher_tax = "Hymenoptera")
-names_harm_select_plantInts<- names_choose(names_harm_plantInts, higher_tax = "Plantae")
-
-# 4. Clean names, append to old
-names_harm_oligolege <- harm_names(names_harm_select_oligolege)
-names_harm_plantInts <- harm_names(names_harm_select_plantInts)
-
-# 5. Manual name corrections
-names_harm_oligolege <- correct_names(names_harm_oligolege, file = "Data_Raw/taxonomy_corrections.csv", column = names_harm)
-names_harm_plantInts <- correct_names(names_harm_plantInts, file = "Data_Raw/taxonomy_corrections.csv", column = names_harm)
+# 3. Apply Jepson taxonomy (plants only)
+# Skip here because jepson corrections are for species level, but data here are only at genus level
+# names_harm_plantInts <- apply_jepson_taxonomy(names_harm_plantInts)
 
 # Join back to original Jarrod Fowler list
 oligoleges <- jarrodFowler_oligoleges %>%
@@ -673,7 +673,7 @@ oligoleges <- jarrodFowler_oligoleges %>%
   left_join(names_oligolege_parsed, by = join_by("sourceTaxonName" == "scientificName")) %>%
   rename(sourceTaxonName_parsed = names_clean) %>%
   dplyr::select(sourceTaxonName_parsed, targetTaxonName, interactionTypeName) %>%
-  # Bees - Second, with parsed names
+  # Bees - Second, with harmonized names
   left_join(names_harm_oligolege, by = join_by("sourceTaxonName_parsed" == "ScientificName")) %>%
   rename(sourceTaxonName_harm = names_harm) %>%
   dplyr::select(sourceTaxonName_harm, targetTaxonName, interactionTypeName) %>%
@@ -681,16 +681,18 @@ oligoleges <- jarrodFowler_oligoleges %>%
   left_join(names_plantInt_parsed, by = join_by("targetTaxonName" == "scientificName")) %>%
   rename(targetTaxonName_parsed = names_clean) %>%
   dplyr::select(sourceTaxonName_harm, targetTaxonName_parsed, interactionTypeName) %>%
-  # Plants - Second, with parsed names
+  # Plants - Second, with harmonized names
   left_join(names_harm_plantInts, by = join_by("targetTaxonName_parsed" == "ScientificName")) %>%
   rename(targetTaxonName_harm = names_harm) %>%
   dplyr::select(sourceTaxonName_harm, targetTaxonName_harm, interactionTypeName)
 
 # remove rows with NA
 oligoleges <- na.omit(oligoleges)
-
-# now, filter to only CA species
+# now, clean plant genus column and filter to only CA species 
 oligoleges_CA <- oligoleges %>%
+  # force all plant names to genus - fowler data lists plant families and genera
+  mutate(targetTaxonName_harm = word(targetTaxonName_harm, 1, 1)) %>%
+  # filter to only CA pollinator species
   filter(sourceTaxonName_harm %in% checklist_cleaned$genus_species)
 
 find_topMix_oligoleges <- function(ecoregion, 
@@ -1316,24 +1318,18 @@ butterflies_declining_SW <- butterfly_trends_SW %>%
 # Load harmonization functions
 source("Code/99_Supporting/name_harmonization.R")
 
-# 1. names
+# 1. Clean raw names
 butterfly_names <- unique(butterflies_declining_SW$scientificName)
 names_butterfly_parsed <- bdc_clean_names(sci_names = butterfly_names, save_outputs = FALSE)
 
-# 2. Send names to gnverifier
-names_harm_butterfly <- names_harmonize(unique(names_butterfly_parsed$names_clean), 
-                                        names_file = "Temp/names_butterflies_declining.tsv", 
-                                        names_harm_file = "Temp/names_harmonized_butterflies_declining.tsv",
-                                        gnv_path = "/home/tb625/bin/")
-
-# 3. Choose best match
-names_harm_select_butterfly <- names_choose(names_harm_butterfly, higher_tax = "Lepidoptera")
-
-# 4. Clean names, append to old
-names_harm_butterfly <- harm_names(names_harm_select_butterfly)
-
-# 5. Manual name corrections
-names_harm_butterfly <- correct_names(names_harm_butterfly, file = "Data_Raw/taxonomy_corrections.csv", column = names_harm)
+# 2. Harmonize names (Lepidoptera)
+names_harm_butterfly <- harmonize_names(
+  names = unique(names_butterfly_parsed$names_clean),
+  higher_tax = "Lepidoptera",
+  names_file = "Temp/names_butterflies_declining.tsv",
+  names_harm_file = "Temp/names_harmonized_butterflies_declining.tsv",
+  gnv_path = gnverifier_path
+)
 
 # list of all focal pols
 butterflies_declining_SW_list <- unique(pull(names_harm_butterfly, names_harm))
@@ -1928,7 +1924,7 @@ print(scenario3_random_summary)
 write.csv(scenario3_results[,1:7], "Data_Clean/Scenario_Results/Scenario3_opt.csv")
 write.csv(scenario3_results[,1:7] %>% group_by(ecoregion) %>% slice_head(n=1) %>% dplyr::select(-c(rank, scientificName)), 
           "Data_Clean/Scenario_Results/Scenario3_pols.csv")
-  
+
 ##
 print(mean(scenario3_results$n_both_interactions))
 print(mean(scenario3_random_results$n_both_interactions))

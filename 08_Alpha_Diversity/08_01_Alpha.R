@@ -1,5 +1,9 @@
 #### Load Packages ####
 library(tidyverse)
+library(stringr)
+library(data.table)
+library(sf)
+library(terra)
 
 #Note: since this is just the alpha summaries at the community level, for now we are keeping pollen and nectar interactions separate for bees
 # Note: In version 1 of the calscape data, we counted "Confirmed" as only interactions that are confirmed in that eocregion. Now we are separating confirmed in the ecoregion from confirmed anywhwere, and Calscape can display those levels now and group them in any way they want
@@ -9,6 +13,9 @@ library(tidyverse)
 # Predicted interactions dataset
 predicted_interactions <- read.csv("Data_Clean/Interactions/Predicted_Interactions.csv")
 
+# all checklists combined
+checklist_cleaned <- fread("Data_Clean/Species_Checklists/checklist_cleaned.csv")
+
 #For now, filter for only simple interaction predictions (more conservative approach)
 predicted_interactions <- predicted_interactions %>%
   filter(
@@ -16,13 +23,29 @@ predicted_interactions <- predicted_interactions %>%
       (interactionTypeName == "visitsFlowersOf" & method_type == "Level1_Simple")
   )
 
+### Remove Gymnosperm flower visitation interactions
+gymnosperm_orders <- c(
+  "Ginkgoales", "Cycadales", "Araucariales",
+  "Cupressales", "Pinales", "Ephedrales",
+  "Welwitschiales", "Gnetales"
+)
+
+gymnosperma_taxa <- checklist_cleaned %>%
+  filter(order %in% gymnosperm_orders)
+
+predicted_interactions <- predicted_interactions %>%
+  filter(!(targetTaxonName_harm %in% gymnosperma_taxa$scientificName & interactionTypeName == "visitsFlowersOf"))
+
 #Add a column designating whether the interaction has been observed anywhere (Right now, our confirmed column is really for "confirmed in that ecoregion")
 
 #read raw interactions
 raw_ints = read.csv("Data_Clean/Interactions/ints_final_clean_withCrops_slim.csv")
 
 raw_ints = raw_ints %>%
-  select(sourceTaxonName_harm, targetTaxonName_harm) %>%
+  select(sourceTaxonName_harm, interactionTypeName, targetTaxonName_harm) %>%
+  mutate(interactionTypeName = ifelse(interactionTypeName == "collectsPollenOf",
+                                      "visitsFlowersOf",
+                                      interactionTypeName)) %>%
   distinct()
 
 raw_ints$observedInteractionAnywhere = 1
@@ -241,22 +264,26 @@ alpha_all_poll <- alpha_all_poll[order(alpha_all_poll$region, alpha_all_poll$pol
 ## Add total confirmed column
 alpha_all_poll$Confirmed_Total <- rowSums(
   alpha_all_poll[, c("Confirmed_Ecoregion",
-                "Confirmed_General")],
+                     "Confirmed_General")],
   na.rm = TRUE
 )
 
 # Add total Sum column
 alpha_all_poll$Sum <- rowSums(
   alpha_all_poll[, c("Confirmed_Ecoregion",
-                "Confirmed_General",
-                "Potential")],
+                     "Confirmed_General",
+                     "Potential")],
   na.rm = TRUE
 )
 
 
+#remove all category 
+alpha_all_poll = alpha_all_poll %>%
+  filter(pollinatorGroup != "all")
+
 ## Save
 #Summarized interactions
-write.csv(alpha_all, "Data_Calscape/Interactionscalscape_interactions_allPredicted_summarised.csv")
+write.csv(alpha_all, "Data_Calscape/Interactions/calscape_interactions_allPredicted_summarised.csv")
 write.csv(alpha_all_poll, "Data_Calscape/Interactions/calscape_interactions_allPredicted_pollinators_summarised.csv")
 
 ## Metadata
@@ -280,7 +307,7 @@ predicted_interactions = predicted_interactions %>%
 pollen = read.csv('Data_Clean/Interactions/ints_final_clean_full.csv')
 
 pollen = pollen %>%
- filter(source %in% c("fowler", "bigbook"), interactionTypeName == "collectsPollenOf") %>%
+  filter(source %in% c("fowler", "bigbook"), interactionTypeName == "collectsPollenOf") %>%
   select(
     source, higherGenus, sourceTaxonName_harm, interactionTypeName,
     lowerGenus, targetTaxonName_harm
@@ -356,8 +383,125 @@ predicted_interactions <- predicted_interactions %>%
   # Clean up helper columns
   select(-lower_genus, -interactionTypeName_pollen)
 
-#Save all predicted Interactions
+#Save all predicted interactions with pollen categories
+write.csv(predicted_interactions, "Data_Calscape/Interactions/calscape_interactions_allPredicted_pollenSeparated.csv")
+
+#now remove pollen separation
+predicted_interactions = predicted_interactions %>%
+  mutate(interactionTypeName = ifelse(interactionTypeName %in% c("collectsPollenOf_general", "collectsPollenOf_specialist"),
+                                      "collectsPollenOf",
+                                      interactionTypeName)) %>%
+  distinct()
+
+
+#Add estimates of how common the pollinators are seen visiting plants, for Calscape to show common representatives of each taxon
+pollRank = alpha_all_poll %>% 
+  select(region, pollinatorGroup, pollinatorSpecies, interactionTypeName, Sum) %>%
+  rename(JEPCODE = region,
+         taxon = pollinatorGroup,
+         higher = pollinatorSpecies) %>%
+  distinct() %>%
+  group_by(JEPCODE, taxon) %>%
+  mutate(pollRank = dense_rank(desc(Sum))) %>%
+  select(-Sum) %>%
+  ungroup()
+
+predicted_interactions = predicted_interactions %>%
+  mutate(join_type = if_else(interactionTypeName == "collectsPollenOf", 
+                             "visitsFlowersOf", 
+                             interactionTypeName)) %>%
+  left_join(pollRank, by = c("JEPCODE", "taxon" = "taxon", "higher" = "higher", 
+                             "join_type" = "interactionTypeName")) %>%
+  select(-join_type)
+
+
+### Create version of interaction df with subspecies
+## calscape table
+calscape_plants <- read.csv("Data_Raw/Species_Traits_Attributes/leg_plants_new_7-26.csv")
+
+# Cleaned occurrences, add ecoregion
+occurrences <- fread("Data_Clean/Occurrences/occurrences_clean.csv")
+
+ecoregions <- read_sf("Data_Raw/Spatial/Jepson_Ecoregions/jepson.shp") %>%
+  st_make_valid()
+
+add_ecoregion <- function(df, lon_col = "decimalLongitude", lat_col = "decimalLatitude") {
+  df %>%
+    mutate(
+      !!lon_col := as.numeric(.data[[lon_col]]),
+      !!lat_col := as.numeric(.data[[lat_col]])
+    ) %>%
+    filter(!is.na(.data[[lon_col]]), !is.na(.data[[lat_col]])) %>%
+    mutate(
+      orig_longitude = .data[[lon_col]],
+      orig_latitude  = .data[[lat_col]]
+    ) %>%
+    st_as_sf(coords = c(lon_col, lat_col), crs = 4326) %>%
+    st_transform(crs(ecoregions)) %>%
+    st_join(ecoregions, join = st_intersects) %>%
+    mutate(
+      !!lon_col := orig_longitude,
+      !!lat_col := orig_latitude
+    ) %>%
+    dplyr::select(-orig_longitude, -orig_latitude)
+}
+
+occurrences_spatial  <- add_ecoregion(occurrences)
+
+# identify ssp/var
+calscape_ssp <- calscape_plants %>%
+  filter(grepl("ssp.", species) | grepl("var.", species)) %>%
+  mutate(
+    targetTaxonName = str_extract(species, "^\\S+\\s+\\S+"),
+    targetTaxonName_infraspecificEpithet = str_trim(
+      str_extract(species, "(?<=ssp\\.|var\\.)\\s*.*")
+    )
+  )
+
+# relate subspecies to parent sp
+subspecies_lookup <- calscape_plants %>%
+  filter(grepl("ssp\\.", species) | grepl("var\\.", species)) %>%
+  mutate(
+    targetTaxonName = str_extract(species, "^\\S+\\s+\\S+"),
+    infraspecificEpithet = str_trim(str_extract(species, "(?<=ssp\\.|var\\.)\\s*.*"))
+  ) %>%
+  distinct(targetTaxonName, infraspecificEpithet)
+
+# get infraspecific taxa region lookup table
+occurrence_infraspecific_lookup <- occurrences_spatial %>%
+  st_drop_geometry() %>%
+  filter(!is.na(infraspecificEpithet), !is.na(JEPCODE)) %>%
+  distinct(genus_species, infraspecificEpithet, JEPCODE)
+
+# Mark original rows as species-level (not infraspecific)
+predicted_interactions_species <- predicted_interactions %>%
+  mutate(lower_infraspecific = 0)
+
+# For each where lower matches a species in the lookup, duplicate it for ssp/var
+# but restrict to only ecoregions where that infraspecific taxa has previously occurred
+predicted_interactions_subspecies <- predicted_interactions %>%
+  inner_join(subspecies_lookup, by = c("lower" = "targetTaxonName")) %>%
+  inner_join(
+    occurrence_infraspecific_lookup,
+    by = c("lower" = "genus_species", "infraspecificEpithet", "JEPCODE")
+  ) %>%
+  mutate(
+    lower = paste(lower, infraspecificEpithet),
+    categoricalInteraction = "Potential",
+    lower_infraspecific = 1
+  ) %>%
+  select(-infraspecificEpithet)
+
+# Combine
+predicted_interactions_expanded <- bind_rows(
+  predicted_interactions_species,
+  predicted_interactions_subspecies
+) %>%
+  arrange(JEPCODE, taxon, higher, lower)
+
+#Save all predicted interactions
 write.csv(predicted_interactions, "Data_Calscape/Interactions/calscape_interactions_allPredicted.csv")
+write.csv(predicted_interactions_expanded, "Data_Calscape/Interactions/calscape_interactions_allPredicted_expandedForInfraspecificTaxa.csv")
 
 #Metadata
 #The only things that has changed since last time are: 
@@ -368,15 +512,18 @@ write.csv(predicted_interactions, "Data_Calscape/Interactions/calscape_interacti
 # Confirmed_General: When the region is one of the 35 Jepson ecoregions (not California), this column refers to interactions where the two interacting species co-occur spatially and temporally in the ecoregion, and we have a data point for the interaction, but that data point is not in the focal ecoregion. So in other words, the interaction itself is confirmed, we just don't know for sure that it occurs in this ecoregion. When the region = California, this column refers to all of the confirmed interactions that we have data points for (agnostic of ecoregion, since its at the state level)
 # Potential: All the predicted interactions from our model, that we don't have any raw data points for, but have high probability of occurring based on our modeling. 
 
-#(2) The interactionTypeName column, which used to have 2 levels (hasHost and visitsFlowersOf) now has 4 levels:
+#(2) The interactionTypeName column, which used to have 2 levels (hasHost and visitsFlowersOf) now has 3 levels:
 
 #hasHost: Lepidoptera (butterflies and moths) larvel host plant interactions
 #visitsFlowersOF: General flower visitation interactions across all taxa
+#collectsPollenOf_general: Pollen collection interactions
+
+# "calscape_interactions_allPredicted_pollenSeparated.csv" also has these:
 #collectsPollenOf_general: General pollen collection interactions, which only applies to bees on our dataset. Note that some of the pollen collection interactions in this column may represent specialist (oligolectic) bee species, but we do not currently have confirmation for that in our dataset, and it is just as likely that they are non-specialized interactions 
 #collectsPollenOf_specialist: Pollen collection interactions involving specialist (oligolectic) bee species. These are the interactions we know, based on our data, are specific to these specialized bees. Note that pollen specialist bee species may still have visitsFlowersOf interactions, which may represent resource use outside of their pollen specialist plants (e.g., nectaring)
 
 # prepare separate dataset of just pollen specialist bees
-pollen = read.csv("Data_Calscape/Interactions/calscape_interactions_allPredicted.csv") %>%
+pollen = read.csv("Data_Calscape/Interactions/calscape_interactions_allPredicted_pollenSeparated.csv") %>%
   filter(interactionTypeName == "collectsPollenOf_specialist") %>%
   select(higher) %>%
   rename(pollinatorSpecies = higher) %>%

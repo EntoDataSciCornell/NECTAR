@@ -3,6 +3,7 @@ library(dplyr)
 library(bdc)
 library(stringr)
 
+gnverifier_path <- ""
 
 #### Read in calflora community data ####
 community_files <- list.files(path = "Data_Raw/Species_Traits_Attributes/calflora_plants_by_community", 
@@ -40,7 +41,8 @@ names_harm_plants <- harmonize_names(
   names = names_plants,
   higher_tax = "Plantae",
   names_file = "Temp/names_calflora_communities.tsv",
-  names_harm_file = "Temp/names_harmonized_calflora_communities.tsv"
+  names_harm_file = "Temp/names_harmonized_calflora_communities.tsv",
+  gnv_path = gnverifier_path
 )
 
 # Apply Jepson taxonomy

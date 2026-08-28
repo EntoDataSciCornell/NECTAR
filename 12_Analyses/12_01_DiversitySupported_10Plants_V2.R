@@ -14,11 +14,16 @@ library(ggplot2)
 library(patchwork)
 library(nngeo)
 library(bdc)
+library(purrr)
 
 #### Supporting scripts ####
 source("Code/12_Analyses/12_00_LoadData.R")
 source("Code/99_Supporting/name_harmonization.R")
 source("Code/99_Supporting/genetic_algorithm.R")
+
+gnverifier_path <- "/home/tb625/bin"
+
+set.seed(123)
 
 #### PART 1: Data Prep and plant selections ####
 #### Load additional datasets ####
@@ -53,11 +58,12 @@ names_harm_external_plants <- harmonize_names(
   names = unique(external_list_names_clean$names_clean),
   higher_tax = "Plantae",
   names_file = "Temp/names_external_plants.tsv",
-  names_harm_file = "Temp/names_harmonized_external_plants.tsv"
+  names_harm_file = "Temp/names_harmonized_external_plants.tsv",
+  gnv_path = gnverifier_path
 )
 
 names_harm_external_plants <- apply_jepson_taxonomy(names_harm_external_plants)
-# Note: some plants not in CA will have names_harm == NA — this is expected
+# Note: some plants not in CA will have names_harm == NA
 
 # Join back to external lists
 external_lists_cleaned <- external_lists %>%
@@ -293,6 +299,85 @@ random_plants_prepList <- eco_all_combos_type %>%
   left_join(plants_per_region) %>%
   rename(targetTaxonName_harm = genus_species)
 
+#### Raw Metaweb based plant optimization ####
+interactions_nectar_observed <- interactions_nectar %>%
+  distinct(targetTaxonName_harm, sourceTaxonName_harm) %>%
+  filter(targetTaxonName_harm %in% checklist_cleaned$genus_species,
+         sourceTaxonName_harm %in% checklist_cleaned$genus_species) %>%
+  left_join(unique(checklist_cleaned[, c("genus_species", "taxon")]),
+            by = join_by("sourceTaxonName_harm" == "genus_species")) %>%
+  rename(sourceTaxonType = taxon)
+
+raw_metaweb <- interactions_nectar_observed %>%
+  merge(data.frame(JEPCODE = unique(ecoregions_simp$JEPCODE))) %>%
+  semi_join(sp_by_region, by = c("targetTaxonName_harm" = "genus_species", "JEPCODE")) %>%
+  semi_join(sp_by_region, by = c("sourceTaxonName_harm" = "genus_species", "JEPCODE"))
+
+pols_supported_raw_metaweb <- raw_metaweb %>%
+  dplyr::select(JEPCODE, sourceTaxonType, sourceTaxonName_harm, targetTaxonName_harm) %>%
+  group_by(targetTaxonName_harm, JEPCODE, sourceTaxonType) %>%
+  summarise(n = n())
+
+pols_supported_raw_metaweb_wide <- pols_supported_raw_metaweb %>%
+  group_by(targetTaxonName_harm, JEPCODE) %>%
+  mutate(total = sum(n)) %>%
+  ungroup() %>%
+  pivot_wider(
+    names_from = sourceTaxonType,
+    values_from = n,
+    values_fill = 0
+  )
+
+top_plants_raw_metaweb <- pols_supported_raw_metaweb_wide %>%
+  inner_join(external_plants_number, by = "JEPCODE", relationship = "many-to-many") %>%
+  group_by(JEPCODE, P2_region, xerces_region, n_plants) %>%
+  arrange(desc(total), .by_group = TRUE) %>%
+  filter(row_number() <= n_plants) %>%
+  ungroup() %>%
+  dplyr::select(JEPCODE, P2_region, xerces_region, targetTaxonName_harm)
+
+top_plants_raw_metaweb_bees <- pols_supported_raw_metaweb_wide %>%
+  inner_join(external_plants_number, by = "JEPCODE", relationship = "many-to-many") %>%
+  group_by(JEPCODE, P2_region, xerces_region, n_plants) %>%
+  arrange(desc(bees), .by_group = TRUE) %>%
+  filter(row_number() <= n_plants) %>%
+  ungroup() %>%
+  dplyr::select(JEPCODE, P2_region, xerces_region, targetTaxonName_harm)
+
+top_plants_raw_metaweb_butterflies <- pols_supported_raw_metaweb_wide %>%
+  inner_join(external_plants_number, by = "JEPCODE", relationship = "many-to-many") %>%
+  group_by(JEPCODE, P2_region, xerces_region, n_plants) %>%
+  arrange(desc(butterflies), .by_group = TRUE) %>%
+  filter(row_number() <= n_plants) %>%
+  ungroup() %>%
+  dplyr::select(JEPCODE, P2_region, xerces_region, targetTaxonName_harm)
+
+top_plants_raw_metaweb_hoverflies <- pols_supported_raw_metaweb_wide %>%
+  inner_join(external_plants_number, by = "JEPCODE", relationship = "many-to-many") %>%
+  group_by(JEPCODE, P2_region, xerces_region, n_plants) %>%
+  arrange(desc(hoverflies), .by_group = TRUE) %>%
+  filter(row_number() <= n_plants) %>%
+  ungroup() %>%
+  dplyr::select(JEPCODE, P2_region, xerces_region, targetTaxonName_harm)
+
+top_plants_raw_metaweb_moths <- pols_supported_raw_metaweb_wide %>%
+  inner_join(external_plants_number, by = "JEPCODE", relationship = "many-to-many") %>%
+  group_by(JEPCODE, P2_region, xerces_region, n_plants) %>%
+  arrange(desc(moths), .by_group = TRUE) %>%
+  filter(row_number() <= n_plants) %>%
+  ungroup() %>%
+  dplyr::select(JEPCODE, P2_region, xerces_region, targetTaxonName_harm)
+
+#### Organize top plants by group, raw metaweb based selection ####
+top_plants_by_group_raw_metaweb <- list(
+  all_pollinators = top_plants_raw_metaweb,
+  bees            = top_plants_raw_metaweb_bees,
+  butterflies     = top_plants_raw_metaweb_butterflies,
+  hoverflies      = top_plants_raw_metaweb_hoverflies,
+  moths           = top_plants_raw_metaweb_moths
+)
+
+
 #### Total pollinators per region ####
 tax <- checklist_cleaned %>%
   dplyr::select(genus_species, taxon) %>%
@@ -323,7 +408,7 @@ sample_and_count_unique_pollinators <- function(plant_list,
     group_by(JEPCODE, P2_region, xerces_region) %>%
     slice_sample(n = 10, replace = FALSE) %>%
     ungroup()
-  
+
   if (use_spatial) {
     plants_with_interactions <- sampled_plants %>%
       left_join(interactions_df,
@@ -343,7 +428,7 @@ sample_and_count_unique_pollinators <- function(plant_list,
                    by = c("JEPCODE", "sourceTaxonName_harm" = "genus_species"))
     }
   }
-  
+
   pollinator_counts <- plants_with_interactions %>%
     group_by(JEPCODE, P2_region, xerces_region) %>%
     summarise(
@@ -356,7 +441,7 @@ sample_and_count_unique_pollinators <- function(plant_list,
       n_unique_butterflies  = n_distinct(sourceTaxonName_harm[sourceTaxonType == "butterflies"], na.rm = TRUE),
       .groups = "drop"
     )
-  
+
   pollinator_counts %>%
     left_join(totals_df, by = "JEPCODE") %>%
     mutate(
@@ -379,12 +464,12 @@ unique_jepcodes <- ecoregions_simp %>%
 complementary_results <- map_dfr(unique_jepcodes, function(jepcode) {
   message(paste("Processing region:", jepcode))
   results_list <- list()
-  
+
   for (group in c("all", "bees", "butterflies", "hoverflies", "moths")) {
     message(paste("  Finding complementary plants for:", group))
-    
+
     region_data <- data.frame(JEPCODE = jepcode)
-    
+
     best_plants <- find_complementary_plants(
       region_data     = region_data,
       interactions_df = predicted_interactions_filtered,
@@ -395,14 +480,14 @@ complementary_results <- map_dfr(unique_jepcodes, function(jepcode) {
       population_size = 200,
       mutation_rate   = 0.1
     )
-    
+
     plants_df <- data.frame(JEPCODE = jepcode, targetTaxonName_harm = best_plants)
-    
+
     plants_with_interactions <- plants_df %>%
       left_join(predicted_interactions_filtered,
                 by = c("targetTaxonName_harm", "JEPCODE"),
                 relationship = "many-to-many")
-    
+
     result <- plants_with_interactions %>%
       summarise(
         JEPCODE              = first(JEPCODE),
@@ -413,10 +498,10 @@ complementary_results <- map_dfr(unique_jepcodes, function(jepcode) {
         n_unique_moths       = n_distinct(sourceTaxonName_harm[sourceTaxonType == "moths"], na.rm = TRUE),
         n_unique_butterflies = n_distinct(sourceTaxonName_harm[sourceTaxonType == "butterflies"], na.rm = TRUE)
       )
-    
+
     results_list[[group]] <- result
   }
-  
+
   bind_rows(results_list)
 }) %>%
   left_join(total_pollinators_by_region, by = "JEPCODE") %>%
@@ -442,6 +527,21 @@ for (group_name in names(top_plants_by_group)) {
       top_plants_by_group[[group_name]],
       predicted_interactions_filtered,
       paste0("top_", group_name),
+      total_pollinators_by_region,
+      iter = .x
+    )
+  )
+}
+
+group_samples_list_raw_metaweb <- list()
+for (group_name in names(top_plants_by_group)) {
+  message(paste("Processing", group_name, "top plants..."))
+  group_samples_list_raw_metaweb[[group_name]] <- map_dfr(
+    1:n_iterations,
+    ~sample_and_count_unique_pollinators(
+      top_plants_by_group_raw_metaweb[[group_name]],
+      predicted_interactions_filtered,
+      paste0("top_", group_name, "_raw_metaweb"),
       total_pollinators_by_region,
       iter = .x
     )
@@ -482,6 +582,11 @@ plants_selected <- bind_rows(
   group_samples_list$butterflies,
   group_samples_list$hoverflies,
   group_samples_list$moths,
+  group_samples_list_raw_metaweb$all_pollinators,
+  group_samples_list_raw_metaweb$bees,
+  group_samples_list_raw_metaweb$butterflies,
+  group_samples_list_raw_metaweb$hoverflies,
+  group_samples_list_raw_metaweb$moths,
   random_sample
 )
 
@@ -499,47 +604,148 @@ plants_selected <- bind_rows(
 
 saveRDS(plants_selected, "Temp/plants_selected.rds")
 
-#### PART 2: Statistical models ####
-n_cores <- 4
-plan(multisession, workers = 1)
-options(mc.cores = 4)
+plants_selected <- readRDS("Temp/plants_selected.rds")
 
-model_specs <- list(
-  all_pollinators = list(
-    formula = n_unique_pollinators | trials(total_pollinators) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare.rds"
-  ),
-  bees = list(
-    formula = n_unique_bees | trials(total_bees) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_bees.rds"
-  ),
-  hoverflies = list(
-    formula = n_unique_hoverflies | trials(total_hoverflies) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_hoverflies.rds"
-  ),
-  butterflies = list(
-    formula = n_unique_butterflies | trials(total_butterflies) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_butterflies.rds"
-  ),
-  moths = list(
-    formula = n_unique_moths | trials(total_moths) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_moths.rds"
+#### PART 2: Statistical models ####
+
+# For a taxa, filter plant selections to 5 relevent methods for comparison
+build_taxon_spec <- function(taxon, base_data, response_var, trials_var, output_path) {
+  
+  comp_taxon <- if (taxon == "all_pollinators") "all" else taxon
+  
+  keep_methods <- c(
+    "random",
+    "external",
+    paste0("top_", taxon),
+    paste0("complementary_", comp_taxon),
+    paste0("top_", taxon, "_raw_metaweb")
   )
+  
+  data_taxon <- base_data %>%
+    filter(method %in% keep_methods) %>%
+    mutate(
+      dummy_ext  = as.numeric(method == "external"),
+      dummy_pred = as.numeric(method != "external")
+    )
+  
+  formula_taxon <- as.formula(
+    paste0(response_var, " | trials(", trials_var, ") ~ 0 + method + ",
+           "(0 + dummy_pred | JEPCODE) + ",
+           "(0 + dummy_ext | mm(P2_region, xerces_region))")
+  )
+  
+  priors_taxon <- c(
+    prior_string("normal(0,1)", class = "b", coef = "methodrandom"),
+    prior_string("normal(0,1)", class = "b", coef = "methodexternal"),
+    prior_string("normal(0,1)", class = "b", coef = paste0("methodtop_", taxon)),
+    prior_string("normal(0,1)", class = "b", coef = paste0("methodcomplementary_", comp_taxon)),
+    prior_string("normal(0,1)", class = "b", coef = paste0("methodtop_", taxon, "_raw_metaweb")),
+    prior_string("student_t(3,0,2.5)", class = "sd", group = "JEPCODE"),
+    prior_string("student_t(3,0,2.5)", class = "sd", group = "mmP2_regionxerces_region")
+  )
+  
+  list(
+    data    = data_taxon,
+    formula = formula_taxon,
+    prior   = priors_taxon,
+    output  = output_path,
+    control = list(adapt_delta = 0.95, max_treedepth = 12)
+  )
+}
+
+# Same idea as above, but for the density-interaction models
+build_density_spec <- function(taxon, base_data, response_var, trials_var, output_path) {
+  
+  comp_taxon <- if (taxon == "all_pollinators") "all" else taxon
+  
+  keep_methods <- c(
+    "random",
+    "external",
+    paste0("top_", taxon),
+    paste0("complementary_", comp_taxon),
+    paste0("top_", taxon, "_raw_metaweb")
+  )
+  
+  data_taxon <- base_data %>%
+    filter(method %in% keep_methods) %>%
+    mutate(
+      dummy_ext  = as.numeric(method == "external"),
+      dummy_pred = as.numeric(method != "external")
+    )
+  
+  formula_taxon <- as.formula(
+    paste0(response_var, " | trials(", trials_var, ") ~ 0 + method + method:log_density + ",
+           "(0 + dummy_pred | JEPCODE) + ",
+           "(0 + dummy_ext | mm(P2_region, xerces_region))")
+  )
+  
+  method_coefs <- c(
+    "methodrandom", "methodexternal",
+    paste0("methodtop_", taxon),
+    paste0("methodcomplementary_", comp_taxon),
+    paste0("methodtop_", taxon, "_raw_metaweb")
+  )
+  interaction_coefs <- paste0(method_coefs, ":log_density")
+  
+  priors_taxon <- c(
+    prior_string("normal(0,1)",   class = "b", coef = method_coefs[1]),
+    prior_string("normal(0,1)",   class = "b", coef = method_coefs[2]),
+    prior_string("normal(0,1)",   class = "b", coef = method_coefs[3]),
+    prior_string("normal(0,1)",   class = "b", coef = method_coefs[4]),
+    prior_string("normal(0,1)",   class = "b", coef = method_coefs[5]),
+    prior_string("normal(0,0.5)", class = "b", coef = interaction_coefs[1]),
+    prior_string("normal(0,0.5)", class = "b", coef = interaction_coefs[2]),
+    prior_string("normal(0,0.5)", class = "b", coef = interaction_coefs[3]),
+    prior_string("normal(0,0.5)", class = "b", coef = interaction_coefs[4]),
+    prior_string("normal(0,0.5)", class = "b", coef = interaction_coefs[5]),
+    prior_string("student_t(3,0,2.5)", class = "sd", group = "JEPCODE"),
+    prior_string("student_t(3,0,2.5)", class = "sd", group = "mmP2_regionxerces_region")
+  )
+  
+  list(
+    data    = data_taxon,
+    formula = formula_taxon,
+    prior   = priors_taxon,
+    output  = output_path,
+    control = list(adapt_delta = 0.95, max_treedepth = 12),
+    threads = 1
+  )
+}
+
+taxa_response_map <- list(
+  all_pollinators = c(response = "n_unique_pollinators", trials = "total_pollinators"),
+  bees            = c(response = "n_unique_bees",        trials = "total_bees"),
+  hoverflies      = c(response = "n_unique_hoverflies",  trials = "total_hoverflies"),
+  butterflies     = c(response = "n_unique_butterflies", trials = "total_butterflies"),
+  moths           = c(response = "n_unique_moths",       trials = "total_moths")
 )
 
-#### Raw interaction metaweb comparison ####
-message("Running raw metaweb comparison...")
+output_paths_predicted <- list(
+  all_pollinators = "Data_Clean/Statistics/revision/brm_compare.rds",
+  bees            = "Data_Clean/Statistics/revision/brm_compare_bees.rds",
+  hoverflies      = "Data_Clean/Statistics/revision/brm_compare_hoverflies.rds",
+  butterflies     = "Data_Clean/Statistics/revision/brm_compare_butterflies.rds",
+  moths           = "Data_Clean/Statistics/revision/brm_compare_moths.rds"
+)
 
+model_specs_compare_predicted <- imap(taxa_response_map, function(rt, taxon) {
+  build_taxon_spec(
+    taxon        = taxon,
+    base_data    = plants_selected,
+    response_var = rt[["response"]],
+    trials_var   = rt[["trials"]],
+    output_path  = output_paths_predicted[[taxon]]
+  )
+})
+names(model_specs_compare_predicted) <- paste0("predicted_", names(model_specs_compare_predicted))
+
+#### Raw interaction metaweb comparison ####
+unique_jepcodes <- ecoregions_simp %>%
+  st_drop_geometry() %>%
+  pull(JEPCODE) %>%
+  unique()
+
+message("Running raw metaweb comparison...")
 interactions_nectar_observed <- interactions_nectar %>%
   distinct(targetTaxonName_harm, sourceTaxonName_harm) %>%
   filter(targetTaxonName_harm %in% checklist_cleaned$genus_species,
@@ -551,11 +757,11 @@ interactions_nectar_observed <- interactions_nectar %>%
 complementary_results_rawCompare <- map_dfr(unique_jepcodes, function(jepcode) {
   message(paste("Processing region:", jepcode))
   results_list <- list()
-  
+
   for (group in c("all", "bees", "butterflies", "hoverflies", "moths")) {
     message(paste("  Finding complementary plants for:", group))
     region_data <- data.frame(JEPCODE = jepcode)
-    
+
     best_plants <- find_complementary_plants(
       region_data     = region_data,
       interactions_df = predicted_interactions_filtered,
@@ -566,22 +772,22 @@ complementary_results_rawCompare <- map_dfr(unique_jepcodes, function(jepcode) {
       population_size = 200,
       mutation_rate   = 0.1
     )
-    
+
     plants_df <- data.frame(JEPCODE = jepcode, targetTaxonName_harm = best_plants)
-    
+
     plants_with_interactions <- plants_df %>%
       left_join(interactions_nectar_observed,
                 by = "targetTaxonName_harm",
                 relationship = "many-to-many")
-    
+
     region_pols <- sp_by_region %>%
       filter(JEPCODE == jepcode) %>%
       dplyr::select(genus_species) %>%
       distinct()
-    
+
     plants_with_interactions <- plants_with_interactions %>%
       inner_join(region_pols, by = c("sourceTaxonName_harm" = "genus_species"))
-    
+
     result <- plants_with_interactions %>%
       summarise(
         JEPCODE              = first(JEPCODE),
@@ -592,10 +798,10 @@ complementary_results_rawCompare <- map_dfr(unique_jepcodes, function(jepcode) {
         n_unique_moths       = n_distinct(sourceTaxonName_harm[sourceTaxonType == "moths"], na.rm = TRUE),
         n_unique_butterflies = n_distinct(sourceTaxonName_harm[sourceTaxonType == "butterflies"], na.rm = TRUE)
       )
-    
+
     results_list[[group]] <- result
   }
-  
+
   bind_rows(results_list)
 }) %>%
   left_join(total_pollinators_by_region, by = "JEPCODE") %>%
@@ -608,6 +814,7 @@ complementary_results_rawCompare <- map_dfr(unique_jepcodes, function(jepcode) {
   )
 
 group_samples_list_rawCompare <- list()
+
 for (group_name in names(top_plants_by_group)) {
   message(paste("Processing", group_name, "top plants..."))
   group_samples_list_rawCompare[[group_name]] <- map_dfr(
@@ -616,6 +823,24 @@ for (group_name in names(top_plants_by_group)) {
       top_plants_by_group[[group_name]],
       interactions_nectar_observed,
       paste0("top_", group_name),
+      total_pollinators_by_region,
+      iter = .x,
+      use_spatial = FALSE,
+      sp_by_region_df = sp_by_region
+    )
+  )
+}
+
+group_samples_list_raw_metaweb_rawCompare <- list()
+
+for (group_name in names(top_plants_by_group)) {
+  message(paste("Processing", group_name, "top plants..."))
+  group_samples_list_raw_metaweb_rawCompare[[group_name]] <- map_dfr(
+    1:n_iterations,
+    ~sample_and_count_unique_pollinators(
+      top_plants_by_group_raw_metaweb[[group_name]],
+      interactions_nectar_observed,
+      paste0("top_", group_name, "_raw_metaweb"),
       total_pollinators_by_region,
       iter = .x,
       use_spatial = FALSE,
@@ -659,6 +884,11 @@ plants_selected_rawCompare <- bind_rows(
   group_samples_list_rawCompare$butterflies,
   group_samples_list_rawCompare$hoverflies,
   group_samples_list_rawCompare$moths,
+  group_samples_list_raw_metaweb_rawCompare$all_pollinators,
+  group_samples_list_raw_metaweb_rawCompare$bees,
+  group_samples_list_raw_metaweb_rawCompare$butterflies,
+  group_samples_list_raw_metaweb_rawCompare$hoverflies,
+  group_samples_list_raw_metaweb_rawCompare$moths,
   random_sample_rawCompare
 )
 
@@ -676,76 +906,29 @@ plants_selected_rawCompare <- bind_rows(
 
 saveRDS(plants_selected_rawCompare, "Temp/plants_selected_rawCompare.rds")
 
-# Set parallel processing
-n_cores <- 4
+plants_selected_rawCompare <- readRDS("Temp/plants_selected_rawCompare.rds")
 
-# Configure multisession
-plan(multisession, workers = 1)  # 5 models
-options(mc.cores = 4)  # 4 chains per model
 
-# models
-model_specs <- list(
-  all_pollinators = list(
-    formula = n_unique_pollinators | trials(total_pollinators) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_rawCompare.rds"
-  ),
-  bees = list(
-    formula = n_unique_bees | trials(total_bees) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_bees_rawCompare.rds"
-  ),
-  hoverflies = list(
-    formula = n_unique_hoverflies | trials(total_hoverflies) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_hoverflies_rawCompare.rds"
-  ),
-  butterflies = list(
-    formula = n_unique_butterflies | trials(total_butterflies) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_butterflies_rawCompare.rds"
-  ),
-  moths = list(
-    formula = n_unique_moths | trials(total_moths) ~ 0 + method +
-      (0 + dummy_pred | JEPCODE) +
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    output = "Data_Clean/brm_compare_moths_rawCompare.rds"
-  )
+output_paths_raw <- list(
+  all_pollinators = "Data_Clean/Statistics/revision/brm_compare_rawCompare.rds",
+  bees            = "Data_Clean/Statistics/revision/brm_compare_bees_rawCompare.rds",
+  hoverflies      = "Data_Clean/Statistics/revision/brm_compare_hoverflies_rawCompare.rds",
+  butterflies     = "Data_Clean/Statistics/revision/brm_compare_butterflies_rawCompare.rds",
+  moths           = "Data_Clean/Statistics/revision/brm_compare_moths_rawCompare.rds"
 )
-# 
-# # Function to fit a single model
-# fit_model <- function(spec, data) {
-#   cat("Fitting model:", spec$output, "\n")
-#   model <- brm(
-#     formula = spec$formula,
-#     family = binomial(link = "logit"),
-#     data = data,
-#     chains = 4,
-#     cores = 4,
-#     iter = 4000,
-#     warmup = 2000,
-#     backend = "cmdstanr",
-#     threads = threading(1)
-#   )
-#   saveRDS(model, spec$output)
-#   cat("Saved model:", spec$output, "\n")
-#   return(spec$output)
-# }
-# 
-# results <- future.apply::future_lapply(
-#   model_specs,
-#   function(spec) fit_model(spec, plants_selected_rawCompare),
-#   future.seed = TRUE
-# )
+
+model_specs_compare_raw <- imap(taxa_response_map, function(rt, taxon) {
+  build_taxon_spec(
+    taxon        = taxon,
+    base_data    = plants_selected_rawCompare,
+    response_var = rt[["response"]],
+    trials_var   = rt[["trials"]],
+    output_path  = output_paths_raw[[taxon]]
+  )
+})
+names(model_specs_compare_raw) <- paste0("raw_", names(model_specs_compare_raw))
 
 #### Data Density Models #####
-
-## Estimate slope of data density, with interaction of method
-# First, get total area per JEPCODE (summing across all region combinations)
 jepcode_areas <- ecoregions %>%
   mutate(area_km2 = as.numeric(st_area(geometry)) / 1e6) %>%
   st_drop_geometry() %>%
@@ -754,8 +937,6 @@ jepcode_areas <- ecoregions %>%
     total_area_km2 = sum(area_km2),
     .groups = "drop"
   )
-
-# Then calculate density
 jepcode_density <- native_CA_interactions %>%
   st_drop_geometry() %>%
   group_by(JEPCODE) %>%
@@ -767,138 +948,97 @@ jepcode_density <- native_CA_interactions %>%
   mutate(
     density = n_interactions / total_area_km2
   )
-
-
-# Prepare data with density
 plants_selected_with_density <- plants_selected %>%
   left_join(jepcode_density, by = "JEPCODE") %>%
   mutate(log_density = log10(density))
-
-## Estimate slope of data density, with interaction of method
-# Prepare data with density
 plants_selected_with_density_rawCompare <- plants_selected_rawCompare %>%
   left_join(jepcode_density, by = "JEPCODE") %>%
   mutate(log_density = log10(density))
 
-
-# Configure multisession
-plan(multisession, workers = 2)  # 2 models
-options(mc.cores = 4)  # 4 chains per model
-
-# Create a list of model specifications
-model_specs <- list(
-  predicted = list(
-    data = plants_selected_with_density,
-    name = "brm_density_interaction",
-    output = "Data_Clean/brm_density_interaction.rds"
+model_specs_density <- list(
+  density_predicted = build_density_spec(
+    taxon        = "all_pollinators",
+    base_data    = plants_selected_with_density,
+    response_var = "n_unique_pollinators",
+    trials_var   = "total_pollinators",
+    output_path  = "Data_Clean/Statistics/revision/brm_density_interaction.rds"
   ),
-  raw = list(
-    data = plants_selected_with_density_rawCompare,
-    name = "brm_density_interaction_rawCompare",
-    output = "Data_Clean/brm_density_interaction_rawCompare.rds"
+  density_raw = build_density_spec(
+    taxon        = "all_pollinators",
+    base_data    = plants_selected_with_density_rawCompare,
+    response_var = "n_unique_pollinators",
+    trials_var   = "total_pollinators",
+    output_path  = "Data_Clean/Statistics/revision/brm_density_interaction_rawCompare.rds"
   )
 )
 
-# Function to fit a single model
-fit_density_model <- function(spec) {
-  cat("Fitting model:", spec$name, "\n")
-  
-  # Set priors
-  priors <- c(
-    # Fixed effects
-    prior(normal(0, 3), class = "b", coef = "methodcomplementary_all"),
-    prior(normal(0, 3), class = "b", coef = "methodcomplementary_bees"),
-    prior(normal(0, 3), class = "b", coef = "methodcomplementary_butterflies"),
-    prior(normal(0, 3), class = "b", coef = "methodcomplementary_hoverflies"),
-    prior(normal(0, 3), class = "b", coef = "methodcomplementary_moths"),
-    prior(normal(0, 3), class = "b", coef = "methodexternal"),
-    prior(normal(0, 3), class = "b", coef = "methodrandom"),
-    prior(normal(0, 3), class = "b", coef = "methodtop_all_pollinators"),
-    prior(normal(0, 3), class = "b", coef = "methodtop_bees"),
-    prior(normal(0, 3), class = "b", coef = "methodtop_butterflies"),
-    prior(normal(0, 3), class = "b", coef = "methodtop_hoverflies"),
-    prior(normal(0, 3), class = "b", coef = "methodtop_moths"),
-    
-    # Interactions 
-    prior(normal(0, 1), class = "b", coef = "methodcomplementary_all:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodcomplementary_bees:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodcomplementary_butterflies:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodcomplementary_hoverflies:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodcomplementary_moths:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodexternal:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodrandom:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodtop_all_pollinators:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodtop_bees:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodtop_butterflies:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodtop_hoverflies:log_density"),
-    prior(normal(0, 1), class = "b", coef = "methodtop_moths:log_density"),
-    
-    # REs
-    prior(student_t(3, 0, 2.5), class = "sd", group = "JEPCODE"),
-    prior(student_t(3, 0, 2.5), class = "sd", group = "mmP2_regionxerces_region")
-  )
+#### Fit everything at once ####
+# Unified fit function used for every model, comparison or density
+fit_model <- function(spec) {
+  cat("Fitting model:", spec$output, "\n")
   
   model <- brm(
-    formula = n_unique_pollinators | trials(total_pollinators) ~ 
-      0 + method +                                    
-      method:log_density +                            
-      (0 + dummy_pred | JEPCODE) +                    
-      (0 + dummy_ext | mm(P2_region, xerces_region)),
-    family = binomial(link = "logit"),
-    data = spec$data,
-    prior = priors,
-    chains = 4,
-    cores = 4,
-    iter = 12000,
-    warmup = 6000,
-    control = list(
-      adapt_delta = 0.99,
-      max_treedepth = 12
-    ),
+    formula = spec$formula,
+    family  = beta_binomial(link = "logit"),
+    data    = spec$data,
+    prior   = spec$prior,
+    chains  = 4,
+    cores   = 4,
+    iter    = 3000,
+    warmup  = 1500,
+    control = spec$control,
     backend = "cmdstanr",
-    threads = threading(2),
-    seed = 123
+    seed    = 123,
+    refresh = 100,
+    silent  = 0
   )
-  
   saveRDS(model, spec$output)
   cat("Saved model:", spec$output, "\n")
   return(spec$output)
 }
 
-# Run both models in parallel
+all_model_specs <- c(
+  model_specs_compare_predicted,
+  model_specs_compare_raw,
+  model_specs_density
+)
+
+plan(multisession, workers = 12)
+options(mc.cores = 4)  # 4 chains per model
+
 results <- future.apply::future_lapply(
-  model_specs,
-  fit_density_model,
+  all_model_specs,
+  fit_model,
   future.seed = TRUE
 )
 
 # Reset to sequential processing when done
 plan(sequential)
 
-
-
-
-
 #### Part 3: Plotting ####
 #### Support by taxa, NECTAR interaction networks ####
-brm_compare <- readRDS("Data_Clean/Statistics/brm_compare.rds")
-brm_compare_bees <- readRDS("Data_Clean/Statistics/brm_compare_bees.rds")
-brm_compare_hoverflies <- readRDS("Data_Clean/Statistics/brm_compare_hoverflies.rds")
-brm_compare_butterflies <- readRDS("Data_Clean/Statistics/brm_compare_butterflies.rds")
-brm_compare_moths <- readRDS("Data_Clean/Statistics/brm_compare_moths.rds")
+brm_compare <- readRDS("Data_Clean/Statistics/revision/brm_compare.rds")
+brm_compare_bees <- readRDS("Data_Clean/Statistics/revision/brm_compare_bees.rds")
+brm_compare_hoverflies <- readRDS("Data_Clean/Statistics/revision/brm_compare_hoverflies.rds")
+brm_compare_butterflies <- readRDS("Data_Clean/Statistics/revision/brm_compare_butterflies.rds")
+brm_compare_moths <- readRDS("Data_Clean/Statistics/revision/brm_compare_moths.rds")
+
+# read in plants selected
+plants_selected <- readRDS("Temp/plants_selected.rds")
+plants_selected_rawCompare <- readRDS("Temp/plants_selected_rawCompare.rds")
 
 ## 1. Extract fixed effects by model/taxonomic group
 extract_method_effects <- function(model, taxa_name, methods_to_extract) {
   # Get posterior draws
   post_draws <- as_draws_df(model)
-
+  
   # Extract the specific method coefficients
   method_cols <- paste0("b_", methods_to_extract)
-
+  
   method_draws <- post_draws %>%
     as.data.frame() %>%
     dplyr::select(all_of(method_cols))
-
+  
   # Calculate mean and credible intervals in logit space, then transform
   fixed_effects <- method_draws %>%
     summarise(across(everything(), list(
@@ -923,22 +1063,22 @@ extract_method_effects <- function(model, taxa_name, methods_to_extract) {
       ymin = lower,
       ymax = upper
     )
-
+  
   return(fixed_effects)
 }
 
 # Define which methods to extract for each taxonomic group
 methods_by_taxa <- list(
   "All Pollinators" = c("methodrandom", "methodexternal",
-                        "methodtop_all_pollinators", "methodcomplementary_all"),
+                        "methodtop_all_pollinators", "methodcomplementary_all", "methodtop_all_pollinators_raw_metaweb"),
   "Bees" = c("methodrandom", "methodexternal",
-             "methodtop_bees", "methodcomplementary_bees"),
+             "methodtop_bees", "methodcomplementary_bees", "methodtop_bees_raw_metaweb"),
   "Butterflies" = c("methodrandom", "methodexternal",
-                    "methodtop_butterflies", "methodcomplementary_butterflies"),
+                    "methodtop_butterflies", "methodcomplementary_butterflies", "methodtop_butterflies_raw_metaweb"),
   "Moths" = c("methodrandom", "methodexternal",
-              "methodtop_moths", "methodcomplementary_moths"),
+              "methodtop_moths", "methodcomplementary_moths", "methodtop_moths_raw_metaweb"),
   "Hoverflies" = c("methodrandom", "methodexternal",
-                   "methodtop_hoverflies", "methodcomplementary_hoverflies")
+                   "methodtop_hoverflies", "methodcomplementary_hoverflies", "methodtop_hoverflies_raw_metaweb")
 )
 
 # Extract fixed effects for all models
@@ -992,7 +1132,7 @@ fixed_effects_all %>%
 
 # Define order to display taxa groups and method for selecting plants
 taxa_levels <- c("All Pollinators", "Bees", "Butterflies", "Moths", "Hoverflies")
-method_display_order <- c("methodrandom", "methodexternal",
+method_display_order <- c("methodrandom", "methodexternal", "methodrawmetaweb",
                           "methodtop", "methodcomplementary")
 
 # Clean up method names for display and create standardized method type
@@ -1002,6 +1142,7 @@ plot_data <- fixed_effects_all %>%
     method_type = case_when(
       grepl("^methodrandom$", method) ~ "methodrandom",
       grepl("^methodexternal$", method) ~ "methodexternal",
+      grepl("raw_metaweb$", method) ~ "methodrawmetaweb",
       grepl("^methodtop_", method) ~ "methodtop",
       grepl("^methodcomplementary_", method) ~ "methodcomplementary",
       TRUE ~ method
@@ -1010,8 +1151,9 @@ plot_data <- fixed_effects_all %>%
     method_label = case_when(
       method_type == "methodrandom" ~ "Random",
       method_type == "methodexternal" ~ "External",
-      method_type == "methodtop" ~ "Top Species",
-      method_type == "methodcomplementary" ~ "Complementary",
+      method_type == "methodrawmetaweb" ~ "Raw Metaweb",
+      method_type == "methodtop" ~ "NECTAR Top Species",
+      method_type == "methodcomplementary" ~ "NECTAR Complementary",
       TRUE ~ method
     ),
     # Set levels of factor
@@ -1024,7 +1166,8 @@ plot_data <- fixed_effects_all %>%
 
 # Parameters for positioning
 taxa_spacing <- 5        # Space between taxonomic groups
-method_spacing <- 0.75    # Space between methods within a group
+group_span <- (4-1) * 0.75
+method_spacing <- group_span / (length(method_display_order) - 1)    # Space between methods within a group
 stagger_offset <- 0.08   # Offset for each method point
 
 plot_data <- plot_data %>%
@@ -1034,7 +1177,7 @@ plot_data <- plot_data %>%
     # Offset within group based on method
     method_offset = (as.numeric(method_type) - 1) * method_spacing,
     # Additional small stagger
-    stagger = (as.numeric(method_type) - 2.5) * stagger_offset,
+    stagger = (as.numeric(method_type) - (length(method_display_order) + 1) / 2) * stagger_offset,
     # Final x position
     x_position = taxa_position + method_offset + stagger
   )
@@ -1064,7 +1207,7 @@ improvement_predictedNetwork <- ggplot(plot_data,
   ) +
   scale_y_continuous(
     labels = scales::percent_format(),
-    limits = c(0, 0.8),
+    limits = c(0, 0.85),
     breaks = seq(0, 0.8, by = 0.1)
   ) +
   scale_color_manual(
@@ -1080,8 +1223,9 @@ improvement_predictedNetwork <- ggplot(plot_data,
     values = c(
       "Random" = 16,      # Circle
       "External" = 17,    # Triangle
-      "Top Species" = 15, # Square
-      "Complementary" = 18 # Diamond
+      "Raw Metaweb" = 8,  # Star
+      "NECTAR Top Species" = 15, # Square
+      "NECTAR Complementary" = 18 # Diamond
     )
   ) +
   labs(
@@ -1114,10 +1258,8 @@ ggsave("Figures/P1_Comparison_ExternalLists/improvement_predictedNetwork.pdf",
        dpi = 600)
 
 
-
-
 #### Data Density vs Improvement Over Random, NECTAR interaction networks ####
-brm_density_interaction <- readRDS("Data_Clean/Statistics/brm_density_interaction.rds")
+brm_density_interaction <- readRDS("Data_Clean/Statistics/revision/brm_density_interaction.rds")
 
 ## 1. Calculate jepcode level data density
 jepcode_areas <- ecoregions %>%
@@ -1149,7 +1291,7 @@ density_grid <- expand_grid(
   log_density = seq(min(jepcode_density$log_density),
                     max(jepcode_density$log_density),
                     length.out = 100),
-  method = c("random", "external", "top_all_pollinators", "complementary_all")
+  method = c("random", "external", "top_all_pollinators", "complementary_all", "top_all_pollinators_raw_metaweb")
 ) %>%
   mutate(
     density = 10^log_density,
@@ -1176,7 +1318,8 @@ grid_improvements <- grid_predictions %>%
   mutate(
     External_vs_Random = external - random,
     Top_vs_Random = top_all_pollinators - random,
-    Complementary_vs_Random = complementary_all - random
+    Complementary_vs_Random = complementary_all - random,
+    RawMetaweb_vs_Random = top_all_pollinators_raw_metaweb - random
   ) %>%
   dplyr::select(log_density, density, .draw, ends_with("vs_Random")) %>%
   pivot_longer(
@@ -1188,12 +1331,14 @@ grid_improvements <- grid_predictions %>%
     comparison = case_when(
       comparison == "External_vs_Random" ~ "External vs Random",
       comparison == "Top_vs_Random" ~ "Top Species vs Random",
-      comparison == "Complementary_vs_Random" ~ "Complementary vs Random"
+      comparison == "Complementary_vs_Random" ~ "Complementary vs Random",
+      comparison == "RawMetaweb_vs_Random" ~ "Raw Metaweb vs Random"
     ),
     comparison = factor(comparison,
                         levels = c("External vs Random",
                                    "Top Species vs Random",
-                                   "Complementary vs Random"))
+                                   "Complementary vs Random",
+                                   "Raw Metaweb vs Random"))
   )
 
 ## 5. Summarize for smooth lines
@@ -1208,7 +1353,7 @@ grid_summary <- grid_improvements %>%
 
 ## 6. For each region, get observed expected improvement from original plants draws
 observed_improvements <- plants_selected %>%
-  filter(method %in% c("random", "external", "top_all_pollinators", "complementary_all")) %>%
+  filter(method %in% c("random", "external", "top_all_pollinators", "complementary_all", "top_all_pollinators_raw_metaweb")) %>%
   group_by(JEPCODE, method) %>%
   summarise(
     pct_pollinators = mean(pct_pollinators, na.rm = TRUE),
@@ -1221,7 +1366,8 @@ observed_improvements <- plants_selected %>%
   mutate(
     External_vs_Random = external - random,
     Top_vs_Random = top_all_pollinators - random,
-    Complementary_vs_Random = complementary_all - random
+    Complementary_vs_Random = complementary_all - random,
+    RawMetaweb_vs_Random = top_all_pollinators_raw_metaweb - random
   ) %>%
   dplyr::select(JEPCODE, ends_with("vs_Random")) %>%
   pivot_longer(
@@ -1233,12 +1379,14 @@ observed_improvements <- plants_selected %>%
     comparison = case_when(
       comparison == "External_vs_Random" ~ "External vs Random",
       comparison == "Top_vs_Random" ~ "Top Species vs Random",
-      comparison == "Complementary_vs_Random" ~ "Complementary vs Random"
+      comparison == "Complementary_vs_Random" ~ "Complementary vs Random",
+      comparison == "RawMetaweb_vs_Random" ~ "Raw Metaweb vs Random"
     ),
     comparison = factor(comparison,
                         levels = c("External vs Random",
                                    "Top Species vs Random",
-                                   "Complementary vs Random"))
+                                   "Complementary vs Random",
+                                   "Raw Metaweb vs Random"))
   ) %>%
   left_join(jepcode_density, by = "JEPCODE")
 
@@ -1278,14 +1426,16 @@ density_improvement_plot <- ggplot() +
     values = c(
       "External vs Random" = "solid",
       "Top Species vs Random" = "dashed",
-      "Complementary vs Random" = "dotted"
+      "Complementary vs Random" = "dotted",
+      "Raw Metaweb vs Random" = "twodash"
     )
   ) +
   scale_shape_manual(
     values = c(
-      "External vs Random" = 16,
-      "Top Species vs Random" = 17,
-      "Complementary vs Random" = 18
+      "External vs Random" = 17,
+      "Top Species vs Random" = 15,
+      "Complementary vs Random" = 18,
+      "Raw Metaweb vs Random" = 8
     )
   ) +
   labs(
@@ -1307,6 +1457,20 @@ ggsave("Figures/P1_Comparison_ExternalLists/density_vs_improvement.pdf",
 
 
 #### Plot 1: Interaction data density ####
+# Ecoregions boundary
+ecoregions_boundary <- ecoregions %>%
+  st_union() %>%
+  nngeo::st_remove_holes()
+
+# Create hex grid
+hex_grid <- st_make_grid(
+  ecoregions_boundary,
+  cellsize = c(0.5, 0.5),
+  square = FALSE,
+  flat_topped = FALSE
+) %>%
+  st_sf(hex_id = 1:length(.))
+
 hex_density <- hex_grid %>%
   st_join(native_CA_interactions) %>%
   group_by(hex_id) %>%
@@ -1436,7 +1600,7 @@ pct_improvement_plot <- ggplot() +
     low = "#EAFFCC",
     mid = "#94C357",
     high = "#3D5E29",
-    midpoint = 25,  # Adjust based on your data range
+    midpoint = 35,  # Adjust based on your data range
     name = "Complementary vs Random\n% Improvement",
     na.value = "grey80"
   ) +
@@ -1469,26 +1633,28 @@ ggsave("Figures/P1_Comparison_ExternalLists/pct_improvement_complementary_vs_ran
        units = "mm",
        dpi = 2000)
 
+
+
 #### Supplementary, Improvement Plots ####
 #### Plot: Support by taxa, raw metaweb ####
-brm_compare <- readRDS("Data_Clean/Statistics/brm_compare_rawCompare.rds")
-brm_compare_bees <- readRDS("Data_Clean/Statistics/brm_compare_bees_rawCompare.rds")
-brm_compare_hoverflies <- readRDS("Data_Clean/Statistics/brm_compare_hoverflies_rawCompare.rds")
-brm_compare_butterflies <- readRDS("Data_Clean/Statistics/brm_compare_butterflies_rawCompare.rds")
-brm_compare_moths <- readRDS("Data_Clean/Statistics/brm_compare_moths_rawCompare.rds")
+brm_compare <- readRDS("Data_Clean/Statistics/revision/brm_compare_rawCompare.rds")
+brm_compare_bees <- readRDS("Data_Clean/Statistics/revision/brm_compare_bees_rawCompare.rds")
+brm_compare_hoverflies <- readRDS("Data_Clean/Statistics/revision/brm_compare_hoverflies_rawCompare.rds")
+brm_compare_butterflies <- readRDS("Data_Clean/Statistics/revision/brm_compare_butterflies_rawCompare.rds")
+brm_compare_moths <- readRDS("Data_Clean/Statistics/revision/brm_compare_moths_rawCompare.rds")
 
 ## 1. Extract fixed effects by model/taxonomic group
 extract_method_effects <- function(model, taxa_name, methods_to_extract) {
   # Get posterior draws
   post_draws <- as_draws_df(model)
-
+  
   # Extract the specific method coefficients
   method_cols <- paste0("b_", methods_to_extract)
-
+  
   method_draws <- post_draws %>%
     as.data.frame() %>%
     dplyr::select(all_of(method_cols))
-
+  
   # Calculate mean and credible intervals in logit space, then transform
   fixed_effects <- method_draws %>%
     summarise(across(everything(), list(
@@ -1513,22 +1679,22 @@ extract_method_effects <- function(model, taxa_name, methods_to_extract) {
       ymin = lower,
       ymax = upper
     )
-
+  
   return(fixed_effects)
 }
 
 # Define which methods to extract for each taxonomic group
 methods_by_taxa <- list(
   "All Pollinators" = c("methodrandom", "methodexternal",
-                        "methodtop_all_pollinators", "methodcomplementary_all"),
+                        "methodtop_all_pollinators", "methodcomplementary_all", "methodtop_all_pollinators_raw_metaweb"),
   "Bees" = c("methodrandom", "methodexternal",
-             "methodtop_bees", "methodcomplementary_bees"),
+             "methodtop_bees", "methodcomplementary_bees", "methodtop_bees_raw_metaweb"),
   "Butterflies" = c("methodrandom", "methodexternal",
-                    "methodtop_butterflies", "methodcomplementary_butterflies"),
+                    "methodtop_butterflies", "methodcomplementary_butterflies", "methodtop_butterflies_raw_metaweb"),
   "Moths" = c("methodrandom", "methodexternal",
-              "methodtop_moths", "methodcomplementary_moths"),
+              "methodtop_moths", "methodcomplementary_moths", "methodtop_moths_raw_metaweb"),
   "Hoverflies" = c("methodrandom", "methodexternal",
-                   "methodtop_hoverflies", "methodcomplementary_hoverflies")
+                   "methodtop_hoverflies", "methodcomplementary_hoverflies", "methodtop_hoverflies_raw_metaweb")
 )
 
 # Extract fixed effects for all models
@@ -1549,7 +1715,7 @@ fixed_effects_all <- bind_rows(
 
 # Define order to display taxa groups and method for selecting plants
 taxa_levels <- c("All Pollinators", "Bees", "Butterflies", "Moths", "Hoverflies")
-method_display_order <- c("methodrandom", "methodexternal",
+method_display_order <- c("methodrandom", "methodexternal", "methodrawmetaweb",
                           "methodtop", "methodcomplementary")
 
 # Clean up method names for display and create standardized method type
@@ -1559,6 +1725,7 @@ plot_data <- fixed_effects_all %>%
     method_type = case_when(
       grepl("^methodrandom$", method) ~ "methodrandom",
       grepl("^methodexternal$", method) ~ "methodexternal",
+      grepl("raw_metaweb$", method) ~ "methodrawmetaweb",
       grepl("^methodtop_", method) ~ "methodtop",
       grepl("^methodcomplementary_", method) ~ "methodcomplementary",
       TRUE ~ method
@@ -1567,6 +1734,7 @@ plot_data <- fixed_effects_all %>%
     method_label = case_when(
       method_type == "methodrandom" ~ "Random",
       method_type == "methodexternal" ~ "External",
+      method_type == "methodrawmetaweb" ~ "Raw Metaweb",
       method_type == "methodtop" ~ "Top Species",
       method_type == "methodcomplementary" ~ "Complementary",
       TRUE ~ method
@@ -1581,7 +1749,8 @@ plot_data <- fixed_effects_all %>%
 
 # Parameters for positioning
 taxa_spacing <- 5        # Space between taxonomic groups
-method_spacing <- 0.75    # Space between methods within a group
+group_span <- (4 - 1) * 0.75
+method_spacing <- group_span / (length(method_display_order) - 1) # Space between methods within a group
 stagger_offset <- 0.08   # Offset for each method point
 
 plot_data <- plot_data %>%
@@ -1591,7 +1760,7 @@ plot_data <- plot_data %>%
     # Offset within group based on method
     method_offset = (as.numeric(method_type) - 1) * method_spacing,
     # Additional small stagger
-    stagger = (as.numeric(method_type) - 2.5) * stagger_offset,
+    stagger = (as.numeric(method_type) - (length(method_display_order) + 1) / 2) * stagger_offset,
     # Final x position
     x_position = taxa_position + method_offset + stagger
   )
@@ -1621,8 +1790,8 @@ improvement_predictedNetwork <- ggplot(plot_data,
   ) +
   scale_y_continuous(
     labels = scales::percent_format(),
-    limits = c(0, 0.5),
-    breaks = seq(0, 0.5, by = 0.1)
+    limits = c(0, 0.7),
+    breaks = seq(0, 0.7, by = 0.1)
   ) +
   scale_color_manual(
     values = c(
@@ -1637,6 +1806,7 @@ improvement_predictedNetwork <- ggplot(plot_data,
     values = c(
       "Random" = 16,      # Circle
       "External" = 17,    # Triangle
+      "Raw Metaweb" = 8,  # Star
       "Top Species" = 15, # Square
       "Complementary" = 18 # Diamond
     )
@@ -1665,17 +1835,13 @@ improvement_predictedNetwork <- ggplot(plot_data,
 
 ggsave("Figures/Supplementary/improvement_predictedNetwork_rawCompare.pdf",
        plot = improvement_predictedNetwork,
-       width = 135,
+       width = 185,
        height = 60,
        units = "mm",
        dpi = 600)
 
-
-
-
 #### Plot: Data Density vs Improvement Over Random, raw metaweb ####
-brm_density_interaction <- readRDS("Data_Clean/brm_density_interaction_rawCompare.rds")
-plants_selected_rawCompare <- readRDS("Data_Clean/plants_selected_rawCompare.rds")
+brm_density_interaction <- readRDS("Data_Clean/Statistics/revision/brm_density_interaction_rawCompare.rds")
 
 ## 1. Calculate jepcode level data density
 jepcode_areas <- ecoregions %>%
@@ -1707,7 +1873,7 @@ density_grid <- expand_grid(
   log_density = seq(min(jepcode_density$log_density),
                     max(jepcode_density$log_density),
                     length.out = 100),
-  method = c("random", "external", "top_all_pollinators", "complementary_all")
+  method = c("random", "external", "top_all_pollinators", "complementary_all", "top_all_pollinators_raw_metaweb")
 ) %>%
   mutate(
     density = 10^log_density,
@@ -1734,7 +1900,8 @@ grid_improvements <- grid_predictions %>%
   mutate(
     External_vs_Random = external - random,
     Top_vs_Random = top_all_pollinators - random,
-    Complementary_vs_Random = complementary_all - random
+    Complementary_vs_Random = complementary_all - random,
+    RawMetaweb_vs_Random = top_all_pollinators_raw_metaweb - random
   ) %>%
   dplyr::select(log_density, density, .draw, ends_with("vs_Random")) %>%
   pivot_longer(
@@ -1746,12 +1913,14 @@ grid_improvements <- grid_predictions %>%
     comparison = case_when(
       comparison == "External_vs_Random" ~ "External vs Random",
       comparison == "Top_vs_Random" ~ "Top Species vs Random",
-      comparison == "Complementary_vs_Random" ~ "Complementary vs Random"
+      comparison == "Complementary_vs_Random" ~ "Complementary vs Random",
+      comparison == "RawMetaweb_vs_Random" ~ "Raw Metaweb vs Random"
     ),
     comparison = factor(comparison,
                         levels = c("External vs Random",
                                    "Top Species vs Random",
-                                   "Complementary vs Random"))
+                                   "Complementary vs Random",
+                                   "Raw Metaweb vs Random"))
   )
 
 ## 5. Summarize for smooth lines
@@ -1766,7 +1935,7 @@ grid_summary <- grid_improvements %>%
 
 ## 6. For each region, get observed expected improvement from original plants draws
 observed_improvements <- plants_selected_rawCompare %>%
-  filter(method %in% c("random", "external", "top_all_pollinators", "complementary_all")) %>%
+  filter(method %in% c("random", "external", "top_all_pollinators", "complementary_all", "top_all_pollinators_raw_metaweb")) %>%
   group_by(JEPCODE, method) %>%
   summarise(
     pct_pollinators = mean(pct_pollinators, na.rm = TRUE),
@@ -1779,7 +1948,8 @@ observed_improvements <- plants_selected_rawCompare %>%
   mutate(
     External_vs_Random = external - random,
     Top_vs_Random = top_all_pollinators - random,
-    Complementary_vs_Random = complementary_all - random
+    Complementary_vs_Random = complementary_all - random,
+    RawMetaweb_vs_Random = top_all_pollinators_raw_metaweb - random
   ) %>%
   dplyr::select(JEPCODE, ends_with("vs_Random")) %>%
   pivot_longer(
@@ -1791,12 +1961,14 @@ observed_improvements <- plants_selected_rawCompare %>%
     comparison = case_when(
       comparison == "External_vs_Random" ~ "External vs Random",
       comparison == "Top_vs_Random" ~ "Top Species vs Random",
-      comparison == "Complementary_vs_Random" ~ "Complementary vs Random"
+      comparison == "Complementary_vs_Random" ~ "Complementary vs Random",
+      comparison == "RawMetaweb_vs_Random" ~ "Raw Metaweb vs Random"
     ),
     comparison = factor(comparison,
                         levels = c("External vs Random",
                                    "Top Species vs Random",
-                                   "Complementary vs Random"))
+                                   "Complementary vs Random",
+                                   "Raw Metaweb vs Random"))
   ) %>%
   left_join(jepcode_density, by = "JEPCODE")
 
@@ -1836,14 +2008,16 @@ density_improvement_plot <- ggplot() +
     values = c(
       "External vs Random" = "solid",
       "Top Species vs Random" = "dashed",
-      "Complementary vs Random" = "dotted"
+      "Complementary vs Random" = "dotted",
+      "Raw Metaweb vs Random" = "twodash"
     )
   ) +
   scale_shape_manual(
     values = c(
-      "External vs Random" = 16,
-      "Top Species vs Random" = 17,
-      "Complementary vs Random" = 18
+      "External vs Random" = 17,
+      "Top Species vs Random" = 15,
+      "Complementary vs Random" = 18,
+      "Raw Metaweb vs Random" = 8
     )
   ) +
   labs(
@@ -1858,7 +2032,7 @@ density_improvement_plot <- ggplot() +
 
 ggsave("Figures/Supplementary/density_vs_improvement_rawCompare.pdf",
        plot = density_improvement_plot,
-       width = 135,
+       width = 100,
        height = 60,
        units = "mm",
        dpi = 600)
@@ -1968,4 +2142,3 @@ ggsave("Figures/Supplementary/pct_improvement_complementary_vs_random_hex_rawCom
        height = 100,
        units = "mm",
        dpi = 2000)
-

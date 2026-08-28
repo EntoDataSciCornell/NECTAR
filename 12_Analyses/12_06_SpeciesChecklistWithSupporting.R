@@ -9,6 +9,7 @@ library(bdc)
 
 #### Supporting scripts ####
 source("Code/99_Supporting/name_harmonization.R")
+gnverifier_path <- "/home/tb625/bin"
 
 #### Read in data ####
 # Core checklist
@@ -42,7 +43,7 @@ moth_checklist      <- read.csv("Data_Clean/Species_Checklists/moth_checklist.cs
 hoverfly_checklist  <- read.csv("Data_Clean/Species_Checklists/hoverfly_checklist.csv")
 
 # Jarrod Fowler oligolege list
-jarrodFowler_oligoleges <- read.csv("Data_Raw/Interactions/JarrodFowler/jarrodFowler_scraped_interactions.csv") %>%
+jarrodFowler_oligoleges <- read.csv("Data_Raw/Interactions/fowler/jarrodFowler_scraped_interactions.csv") %>%
   rename(sourceTaxonName = higher,
          targetTaxonName = lower)
 
@@ -144,7 +145,8 @@ names_harm_olig <- harmonize_names(
   names           = unique(names_olig_parsed$names_clean),
   higher_tax      = "Hymenoptera",
   names_file      = "Temp/names_oligoleges.tsv",
-  names_harm_file = "Temp/names_harmonized_oligoleges.tsv"
+  names_harm_file = "Temp/names_harmonized_oligoleges.tsv",
+  gnv_path        = gnverifier_path
 )
 
 oligolege_species <- jarrodFowler_oligoleges %>%
@@ -174,7 +176,7 @@ checklist_filt <- checklist %>%
   arrange(genus_species, desc(is_species_level)) %>%  # species-level rows first
   dplyr::select(genus_species, taxon, phylum, class, order, family, genus) %>%
   distinct(genus_species, .keep_all = TRUE) # Get first entry (preferred species level)
-  
+
 supplementary_checklist <- checklist_filt %>%
   dplyr::select(genus_species, taxon, phylum, class, order, family, genus) %>%
   unique() %>%

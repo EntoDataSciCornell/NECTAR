@@ -18,7 +18,9 @@ invasive_sp <- read.csv("Data_Raw/Species_Traits_Attributes/USRIISv2_MasterList.
   # remove extra bits in scientific name
   mutate(names_clean = stringr::str_remove_all(scientificName, paste(c("ssp. ", "var. "), collapse = "|"))) %>%
   # and remove white space around name
-  mutate(names_clean = gsub("\\s+", " ", trimws(names_clean)))
+  mutate(names_clean = gsub("\\s+", " ", trimws(names_clean))) %>%
+  # filter for only non-native taxa known to L48 states
+  filter(locality == "L48")
 
 # cisac invasives, CA (https://calinvasives.ucdavis.edu/)
 all_invasives_CA <- read.csv("Data_Raw/Species_Traits_Attributes/cisac-species.csv") %>%

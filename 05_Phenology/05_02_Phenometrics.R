@@ -196,16 +196,16 @@ phen_circular <- mcMap(phenol_wrapper_circular_skewed,
                        subsets_by_species_type1,
                        names(subsets_by_species_type1),
                        MoreArgs = list(quantiles = c(0.05, 0.95), 
-                                    include_ci = FALSE,
-                                    min_obs = 10,
-                                    min_obs_unique = 3),
+                                       include_ci = FALSE,
+                                       min_obs = 10,
+                                       min_obs_unique = 3),
                        mc.cores = 10)
 
 # Combine results
 phen_df <- bind_rows(phen_circular) %>%
   rename(phen_start = q05, phen_end = q95) %>%
   mutate(duration = ifelse(phen_start>=phen_end,
-                               (365-phen_start + phen_end),
+                           (365-phen_start + phen_end),
                            phen_end - phen_start)) # length of adult active period
 
 # Save as csv
@@ -357,7 +357,7 @@ phen_region_results <- mcMap(
 phen_region_results_df <- bind_rows(phen_region_results) %>%
   rename(phen_start = q05, phen_end = q95) %>%
   mutate(duration = ifelse(phen_start >= phen_end,
-                               (365 - phen_start + phen_end),
+                           (365 - phen_start + phen_end),
                            phen_end - phen_start))
 
 # Break into each region type
@@ -390,7 +390,7 @@ pheno_interval <- function(sp_data,
   # Sort thetas
   theta_sorted <- sort(sp_theta)
   n <- length(theta_sorted)
-
+  
   # Calculate gaps between consecutive points (including wrap-around for change of year)
   gaps <- numeric(n)
   for (i in 1:(n-1)) {
@@ -471,7 +471,7 @@ pheno_buffer <- function(sp_data,
   # Wrap to [1, 365] range
   phen_start <- ((phen_start_raw - 1) %% 365) + 1
   phen_end <- ((phen_end_raw - 1) %% 365) + 1
-
+  
   list(
     genus_species = sp_name,
     phen_start = phen_start,
@@ -510,18 +510,18 @@ sp_by_region <- read.csv("Data_Clean/Species_Checklists/ecoregion_checklist.csv"
   # only species level, remove subspecies
   dplyr::select(-scientificName) %>%
   unique()
- 
+
 # Species and region
 phen_best <- sp_by_region %>%
   # get "best" phenology information
   mutate(
     phen_start = coalesce(
       phen_l3$phen_start[match(paste(genus_species, JEPCODE), 
-                            paste(phen_l3$genus_species, phen_l3$JEPCODE))],  # Check ecoregion 3 level
+                               paste(phen_l3$genus_species, phen_l3$JEPCODE))],  # Check ecoregion 3 level
       phen_l2$phen_start[match(paste(genus_species, REGION), 
-                            paste(phen_l2$genus_species, phen_l2$REGION))],  # Check ecoregion 2 level
+                               paste(phen_l2$genus_species, phen_l2$REGION))],  # Check ecoregion 2 level
       phen_l1$phen_start[match(paste(genus_species, PROV), 
-                            paste(phen_l1$genus_species, phen_l1$PROV))],  # Check ecoregion 1 level
+                               paste(phen_l1$genus_species, phen_l1$PROV))],  # Check ecoregion 1 level
       phen_simple$phen_start[match(genus_species, phen_simple$genus_species)],  # Check species level
       phen_type2$phen_start[match(genus_species, phen_type2$genus_species)],  # Type 2
       phen_type3$phen_start[match(genus_species, phen_type3$genus_species)]  # Type 3
@@ -529,11 +529,11 @@ phen_best <- sp_by_region %>%
     
     phen_end = coalesce(
       phen_l3$phen_end[match(paste(genus_species, JEPCODE), 
-                            paste(phen_l3$genus_species, phen_l3$JEPCODE))],  # Check ecoregion 3 level
+                             paste(phen_l3$genus_species, phen_l3$JEPCODE))],  # Check ecoregion 3 level
       phen_l2$phen_end[match(paste(genus_species, REGION), 
-                            paste(phen_l2$genus_species, phen_l2$REGION))],  # Check ecoregion 2 level
+                             paste(phen_l2$genus_species, phen_l2$REGION))],  # Check ecoregion 2 level
       phen_l1$phen_end[match(paste(genus_species, PROV), 
-                            paste(phen_l1$genus_species, phen_l1$PROV))],  # Check ecoregion 1 level
+                             paste(phen_l1$genus_species, phen_l1$PROV))],  # Check ecoregion 1 level
       phen_simple$phen_end[match(genus_species, phen_simple$genus_species)], # Check species level
       phen_type2$phen_end[match(genus_species, phen_type2$genus_species)],  # Type 2
       phen_type3$phen_end[match(genus_species, phen_type3$genus_species)]  # Type 3
@@ -542,11 +542,11 @@ phen_best <- sp_by_region %>%
     
     duration = coalesce(
       phen_l3$duration[match(paste(genus_species, JEPCODE), 
-                                 paste(phen_l3$genus_species, phen_l3$JEPCODE))],  # Check ecoregion 3 level
+                             paste(phen_l3$genus_species, phen_l3$JEPCODE))],  # Check ecoregion 3 level
       phen_l2$duration[match(paste(genus_species, REGION), 
-                                 paste(phen_l2$genus_species, phen_l2$REGION))],  # Check ecoregion 2 level
+                             paste(phen_l2$genus_species, phen_l2$REGION))],  # Check ecoregion 2 level
       phen_l1$duration[match(paste(genus_species, PROV), 
-                                 paste(phen_l1$genus_species, phen_l1$PROV))],  # Check ecoregion 1 level
+                             paste(phen_l1$genus_species, phen_l1$PROV))],  # Check ecoregion 1 level
       phen_simple$duration[match(genus_species, phen_simple$genus_species)],  # Check species level
       phen_type2$duration[match(genus_species, phen_type2$genus_species)],  # Type 2
       phen_type3$duration[match(genus_species, phen_type3$genus_species)]  # Type 3
@@ -555,11 +555,11 @@ phen_best <- sp_by_region %>%
     # What scale are the phenology estimates from??
     phen_scale = case_when( # keep track of which scale the estimate came from
       !is.na(phen_l3$phen_start[match(paste(genus_species, JEPCODE), 
-                                   paste(phen_l3$genus_species, phen_l3$JEPCODE))]) ~ "JEPCODE",
+                                      paste(phen_l3$genus_species, phen_l3$JEPCODE))]) ~ "JEPCODE",
       !is.na(phen_l2$phen_start[match(paste(genus_species, REGION), 
-                                   paste(phen_l2$genus_species, phen_l2$REGION))]) ~ "REGION",
+                                      paste(phen_l2$genus_species, phen_l2$REGION))]) ~ "REGION",
       !is.na(phen_l1$phen_start[match(paste(genus_species, PROV), 
-                                   paste(phen_l1$genus_species, phen_l1$PROV))]) ~ "PROV",
+                                      paste(phen_l1$genus_species, phen_l1$PROV))]) ~ "PROV",
       !is.na(phen_simple$phen_start[match(genus_species, phen_simple$genus_species)]) ~ "CALIFORNIA",
       !is.na(phen_type2$phen_start[match(genus_species, phen_type2$genus_species)]) ~ "TYPE2",
       !is.na(phen_type3$phen_start[match(genus_species, phen_type3$genus_species)]) ~ "TYPE3",
@@ -587,3 +587,52 @@ phen_best <- sp_by_region %>%
 
 # Save as csv
 write.csv(phen_best, "Data_Clean/Phenology/phenology_best_available.csv")
+
+##### Remove Gymnosperms that made it through to here #####
+phen_best <- read.csv("Data_Clean/Phenology/phenology_best_available.csv")
+phen_simple <- read.csv("Data_Clean/Phenology/phenology_simple.csv")
+phen_type2 <- read.csv("Data_Clean/Phenology/phenology_type2.csv")
+phen_type3 <- read.csv("Data_Clean/Phenology/phenology_type3.csv")
+phen_eco_jepcode <- read.csv("Data_Clean/Phenology/phenology_eco_jepcode.csv")
+phen_eco_prov <- read.csv("Data_Clean/Phenology/phenology_eco_prov.csv")
+phen_eco_region <- read.csv("Data_Clean/Phenology/phenology_eco_region.csv")
+
+# checklists
+checklists <- read.csv("Data_Clean/Species_Checklists/checklist_cleaned.csv")
+
+
+### Remove Gymnosperm flowering phenology
+gymnosperm_orders <- c(
+  "Ginkgoales", "Cycadales", "Araucariales",
+  "Cupressales", "Pinales", "Ephedrales",
+  "Welwitschiales", "Gnetales"
+)
+
+gymnosperma_taxa <- checklists %>%
+  filter(order %in% gymnosperm_orders)
+
+# Filter out gymnosperms
+phen_best <- phen_best %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+phen_simple <- phen_simple %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+phen_type2 <- phen_type2 %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+phen_type3 <- phen_type3 %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+phen_eco_jepcode <- phen_eco_jepcode %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+phen_eco_prov <- phen_eco_prov %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+phen_eco_region <- phen_eco_region %>%
+  filter(!(genus_species %in% gymnosperma_taxa$scientificName))
+
+
+# Save files again
+write.csv(phen_best, "Data_Clean/Phenology/phenology_best_available.csv", row.names=F)
+write.csv(phen_simple, "Data_Clean/Phenology/phenology_simple.csv", row.names=F)
+write.csv(phen_type2, "Data_Clean/Phenology/phenology_type2.csv", row.names=F)
+write.csv(phen_type3, "Data_Clean/Phenology/phenology_type3.csv", row.names=F)
+write.csv(phen_eco_jepcode, "Data_Clean/Phenology/phenology_eco_jepcode.csv", row.names=F)
+write.csv(phen_eco_prov, "Data_Clean/Phenology/phenology_eco_prov.csv", row.names=F)
+write.csv(phen_eco_region, "Data_Clean/Phenology/phenology_eco_region.csv", row.names=F)

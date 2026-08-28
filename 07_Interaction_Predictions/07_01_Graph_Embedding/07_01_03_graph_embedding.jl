@@ -6,23 +6,28 @@ using DataFrames
 using StatsBase
 using Pipe
 using Distributions
-using PhyloNetworks
+using PhyloNetworks #Pkg.add(name="PhyloNetworks", version="0.16.4")
 using Random
 using JLD2
 
+
+
 #Read in the data
 interaction_df = @pipe CSV.read("Data_Clean/Interactions/ints_final_clean_slim.csv", DataFrame) |>
-                    filter(row -> row.isCrop .== "NA", _) |> #filter out crops for now
+                    filter(row -> row.interactionTypeName .!= "hasHost", _) |> #filter out crops for now
                     filter(row -> length(split(row.sourceTaxonName_harm)) >= 2, _) # filter out pollinators that is at the genus level only
+
+#check the interactionTypeName (no host!)
+unique(interaction_df.interactionTypeName)
+
 #we need to extract the first and second word from sourceTaxonName_harm
 interaction_df.genus_species=[join(split(name)[1:2], " ") for name in interaction_df.sourceTaxonName_harm]
-
 
 checklist_df = @pipe CSV.read("Data_Clean/Species_Checklists/checklist_cleaned.csv", DataFrame) 
 
 
 #Filter the checklist to only include the targeted group
-group_name = "hoverflies" #change this to the targeted group
+group_name = "moths" #change this to the targeted group
 group_checklist = checklist_df[checklist_df.taxon .∈ Ref([group_name]), :]
 
 #Filter the interaction data to only include the targeted group based the genera present in the checklist
@@ -40,7 +45,7 @@ plant_checklist = @pipe checklist_df |>
     filter(row -> row.genus ∈ plant_genera, _)
 
 #Read in the phylogenetic tree for the targeted group
-pollinator_tree = readTopology("/Users/yc2864/Documents/research/Morpho_Interactions/Code/07_Interaction_Prediction/07_05_graph_embedding/output/$(group_name)_tree.nwk")
+pollinator_tree = readTopology("Data_Clean/Phylogeny/$(group_name)_tree.nwk")
 
 # A function to perform ancestral state reconstruction
 function ace_distribution(τ, ϕ)
@@ -133,6 +138,7 @@ for v in var_explained
         # Reconstruct latent variables for all species (including held-out)
         pollinator_imputedtraits = DataFrame(;
             tipNames=[pollinator_leaves; fill(missing, pollinator_tree.numNodes - pollinator_tree.numTaxa)]
+
         )
         
         # Phylogenetic reconstruction for each dimension

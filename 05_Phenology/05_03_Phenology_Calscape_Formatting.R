@@ -20,12 +20,44 @@ month_names <- c("January", "Febuary", "March", "April", "May", "June",
                  "July", "August", "September", "October", "November", "December")
 month_breaks <- c(0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334, 365)
 
+## Add confidence flag
+# For phen_best(regional phenology), flag if pheno estimated at scale other then JEPCODE
+# For phen_simple, flag if estimated using Type2 or Type3 method
+phen_best$confidence_flag <- case_when(
+  phen_best$phen_scale == "JEPCODE" ~ NA,
+  phen_best$phen_scale == "REGION" ~ "dataPooled",
+  phen_best$phen_scale == "PROV" ~ "dataPooled",
+  phen_best$phen_scale == "CALIFORNIA" ~ NA,
+  phen_best$phen_scale == "TYPE2" ~ "methodSimple",
+  phen_best$phen_scale == "TYPE3" ~ "methodSimple",
+  .default = "?"
+)
+
+phen_simple$confidence_flag <- NA
+phen_type2$confidence_flag <- "methodSimple"
+phen_type3$confidence_flag <- "methodSimple"
+
 ## Reformat phenology
 # remove NA
-phen_best <- na.omit(phen_best[, c("genus_species", "JEPCODE", "phen_start", "phen_end")])
-phen_simple <- na.omit(phen_simple[, c("genus_species", "phen_start", "phen_end")])
-phen_type2 <- na.omit(phen_type2[, c("genus_species", "phen_start", "phen_end")])
-phen_type3 <- na.omit(phen_type3[, c("genus_species", "phen_start", "phen_end")])
+phen_best <- phen_best[, c("genus_species", "JEPCODE", "phen_start", "phen_end", "confidence_flag")]
+phen_best <- phen_best[!is.na(phen_best$genus_species) & 
+                         !is.na(phen_best$phen_start) & 
+                         !is.na(phen_best$phen_end), ]
+
+phen_simple <- phen_simple[, c("genus_species", "phen_start", "phen_end", "confidence_flag")]
+phen_simple <- phen_simple[!is.na(phen_simple$genus_species) & 
+                             !is.na(phen_simple$phen_start) & 
+                             !is.na(phen_simple$phen_end), ]
+
+phen_type2 <- phen_type2[, c("genus_species", "phen_start", "phen_end", "confidence_flag")]
+phen_type2 <- phen_type2[!is.na(phen_type2$genus_species) & 
+                           !is.na(phen_type2$phen_start) & 
+                           !is.na(phen_type2$phen_end), ]
+
+phen_type3 <- phen_type3[, c("genus_species", "phen_start", "phen_end", "confidence_flag")]
+phen_type3 <- phen_type3[!is.na(phen_type3$genus_species) & 
+                           !is.na(phen_type3$phen_start) & 
+                           !is.na(phen_type3$phen_end), ]
 
 # Merge simple, type2, and type3 (all are at same stat-level resolution)
 phen_simple <- rbind(phen_simple, phen_type2, phen_type3)
@@ -78,6 +110,13 @@ phen_simple_calscape <- cbind(phen_simple, phen_simple_mat)
 phen_best_mat <- phenomatrix(phen_best$phen_start, phen_best$phen_end, month_names)
 phen_best_calscape <- cbind(phen_best, phen_best_mat)
 
+## Add/Rename JEPCODE to region
+phen_best_calscape <- phen_best_calscape %>%
+  rename(region = JEPCODE)
+phen_simple_calscape$region <- "CALIFORNIA"
+
+## Merge
+phen_all_calscape <- bind_rows(phen_best_calscape, phen_simple_calscape)
+
 # Save
-write.csv(phen_simple_calscape, "Data_Calscape/Phenology/calscape_phenology_stateScale.csv")
-write.csv(phen_best_calscape, "Data_Calscape/Phenology/calscape_phenology_jepcodeScale.csv")
+write.csv(phen_all_calscape, "Data_Calscape/Phenology/calscape_phenology.csv")

@@ -18,15 +18,15 @@ calflora_communities <- read.csv("Data_Clean/Species_Traits_Attributes/Calflora_
 calflora_communities = na.omit(calflora_communities)
 
 ## Interaction cleaning
-interaction_data_nectar <- interaction_data %>%
-  # Beta diversity for only nectar interactions
-  filter(interactionTypeName %in% c("visitsFlowersOf", "collectsPollenOf_general", "collectsPollenOf_specialist")) %>%
+interaction_data_visitsFlowersOf <- interaction_data %>%
+  # Beta diversity for only flower visitation interactions
+  filter(interactionTypeName %in% c("visitsFlowersOf", "collectsPollenOf")) %>%
   # select clean columns
   dplyr::select(higher, lower, JEPCODE) %>%
   mutate(potentialOrConfirmed = 1) %>%
   unique()
 
-interaction_data_host <- interaction_data %>%
+interaction_data_hasHost <- interaction_data %>%
   # Beta diversity for only host interactions
   filter(interactionTypeName == "hasHost") %>%
   # select clean columns
@@ -143,47 +143,24 @@ find_community_constrained_companions <- function(ecoregion, interaction_data_su
     # If no candidates after filtering, skip
     if (length(candidate_plants) == 0) next
     
-    # Initialize for this focal plant
-    covered_pollinators <- focal_pollinators
-    selected_companions <- character(0)
+    # Select up to 20 companion plants
+    pollinator_counts <- sapply(candidate_plants, function(plant) {
+      sum(interaction_matrix[plant, ] | focal_pollinators)
+    })
     
-    # Select up to 10 companion plants
-    for (rank in 1:20) {
-      if (length(candidate_plants) == 0) break
-      
-      # Calculate the number of new pollinators each plant would add
-      new_pollinator_counts <- sapply(candidate_plants, function(plant) {
-        plant_pollinators <- interaction_matrix[plant, ]
-        sum(plant_pollinators & !covered_pollinators)
-      })
-      
-      # If no new pollinators can be added, stop
-      if (max(new_pollinator_counts) == 0) break
-      
-      # Find plant with max new pollinators
-      ### TEAGAN CHECK: Check how ties are being handled. Maybe should break ties in new pollinators by total pollinators supported by each plant?
-      best_plant_index <- which.max(new_pollinator_counts)
-      best_plant <- candidate_plants[best_plant_index]
-      best_count <- new_pollinator_counts[best_plant_index]
-      
-      # Update covered pollinators
-      plant_pollinators <- interaction_matrix[best_plant, ]
-      covered_pollinators <- covered_pollinators | plant_pollinators
-      
-      # Add best plant to selected list
-      selected_companions <- c(selected_companions, best_plant)
-      
-      # Remove selected plant from candidate list
-      candidate_plants <- setdiff(candidate_plants, best_plant)
-      
-      # Record this companion plant
+    solo_counts <- rowSums(interaction_matrix[candidate_plants, , drop = FALSE])
+    ranked <- order(pollinator_counts, solo_counts, decreasing = TRUE)
+    top20  <- candidate_plants[ranked[1:min(20, length(candidate_plants))]]
+    counts <- pollinator_counts[ranked[1:min(20, length(candidate_plants))]]
+    
+    for (r in seq_along(top20)) {
       companion_results <- rbind(companion_results, data.frame(
-        focal_plant = focal_plant,
-        companion_plant = best_plant,
-        added_pollinators = best_count,
-        total_pollinators = sum(covered_pollinators),
-        rank = rank,
-        JEPCODE = ecoregion
+        focal_plant       = focal_plant,
+        companion_plant   = top20[r],
+        added_pollinators = counts[r] - sum(focal_pollinators),
+        total_pollinators = counts[r],
+        rank              = r,
+        JEPCODE           = ecoregion
       ))
     }
   }
@@ -193,12 +170,12 @@ find_community_constrained_companions <- function(ecoregion, interaction_data_su
 
 ## Process all ecoregions in parallel
 # nectar plants
-all_companion_nectar_results <- foreach(ecoregion = ecoregions, .packages = c("dplyr", "tidyr"), .combine = rbind) %dopar% {
-  find_community_constrained_companions(ecoregion, interaction_data_nectar)
+all_companion_visitsFlowersOf_results <- foreach(ecoregion = ecoregions, .packages = c("dplyr", "tidyr"), .combine = rbind) %dopar% {
+  find_community_constrained_companions(ecoregion, interaction_data_visitsFlowersOf)
 }
 # host plants
-all_companion_host_results <- foreach(ecoregion = ecoregions, .packages = c("dplyr", "tidyr"), .combine = rbind) %dopar% {
-  find_community_constrained_companions(ecoregion, interaction_data_host)
+all_companion_hasHost_results <- foreach(ecoregion = ecoregions, .packages = c("dplyr", "tidyr"), .combine = rbind) %dopar% {
+  find_community_constrained_companions(ecoregion, interaction_data_hasHost)
 }
 
 #### state level companion plants #####
@@ -266,75 +243,92 @@ process_state_focal_plant <- function(focal_plant,
                                       state_eco_matrix,
                                       all_plants) {
   
+  # Skip plants with no interaction data at the state level
   if (!(focal_plant %in% rownames(state_interaction_matrix))) {
     return(data.frame(focal_plant = character(0), companion_plant = character(0),
                       added_pollinators = integer(0), total_pollinators = integer(0),
                       rank = integer(0), JEPCODE = character(0)))
   }
   
+  # Get the full set of pollinators associated with the focal plant across all ecoregions
   focal_pollinators <- state_interaction_matrix[focal_plant, ]
   
-  # Community filter (identical to ecoregion level)
+  ## co-occurrence filter
+  # Restrict candidates to plants that geographically overlap with the focal plant.
+  # Main threshold: candidate must share >= 50% of the focal plant's ecoregions.
+  # Fallback threshold: candidate must share at least 1 ecoregion with the focal plant.
+  if (focal_plant %in% rownames(state_eco_matrix)) {
+    focal_eco     <- state_eco_matrix[focal_plant, ]
+    n_focal_eco   <- sum(focal_eco)
+    # Count how many of the focal plant's ecoregions each other plant also occurs in
+    shared_counts <- as.vector(state_eco_matrix %*% focal_eco)
+    names(shared_counts) <- rownames(state_eco_matrix)
+    
+    # Primary: >= 50% ecoregion overlap
+    cooccurring <- names(shared_counts)[shared_counts >= n_focal_eco * 0.5 &
+                                          names(shared_counts) != focal_plant]
+    # Fallback: at least 1 shared ecoregion
+    cooccurring_any <- names(shared_counts)[shared_counts >= 1 &
+                                              names(shared_counts) != focal_plant]
+  } else {
+    return(data.frame(focal_plant = character(0), companion_plant = character(0),
+                      added_pollinators = integer(0), total_pollinators = integer(0),
+                      rank = integer(0), JEPCODE = character(0)))
+  }
+  
+  ## community filter
+  # Restrict candidates to plants that share at least one plant community with the
+  # focal plant (e.g. both occur in coastal scrub). If the focal plant has no community data, fall back to
+  # all plants that share at least 1 ecoregion (cooccurring_any) so
+  # geographic constraint is still enforce
   community_sharing <- find_community_sharing_plants(
     focal_plant, state_community_matrix, all_plants
   )
   if (length(community_sharing) == 0) {
-    community_sharing <- setdiff(all_plants, focal_plant)
+    community_sharing <- cooccurring_any
   }
   
-  # Co-occurrence filter: companion must share >= 50% of focal's ecoregions
-  if (focal_plant %in% rownames(state_eco_matrix)) {
-    focal_eco       <- state_eco_matrix[focal_plant, ]
-    n_focal_eco     <- sum(focal_eco)
-    shared_counts   <- as.vector(state_eco_matrix %*% focal_eco)
-    names(shared_counts) <- rownames(state_eco_matrix)
-    cooccurring <- names(shared_counts)[shared_counts >= n_focal_eco * 0.5 &
-                                          names(shared_counts) != focal_plant]
-  } else {
-    # No ecoregion info — fall back to all plants
-    cooccurring <- setdiff(all_plants, focal_plant)
-  }
-  
-  # Intersect both filters, then restrict to interaction matrix rows
+  ## combine filters
   candidate_plants <- intersect(community_sharing, cooccurring)
+  if (length(candidate_plants) == 0) {
+    candidate_plants <- intersect(community_sharing, cooccurring_any)
+  }
   candidate_plants <- intersect(candidate_plants, rownames(state_interaction_matrix))
   
+  # Skip focal plant if no valid candidates remain after all filters
   if (length(candidate_plants) == 0) {
     return(data.frame(focal_plant = character(0), companion_plant = character(0),
                       added_pollinators = integer(0), total_pollinators = integer(0),
                       rank = integer(0), JEPCODE = character(0)))
   }
   
-  # Greedy companion selection
+  ## Rank candidate companions
+  # For each candidate, count the total unique pollinators supported when paired
+  # with the focal plant (union of both plants' pollinator sets). Rank by this
+  # count, using each candidate's total pollinator count as tiebreaker
   results <- data.frame(focal_plant = character(0), companion_plant = character(0),
                         added_pollinators = integer(0), total_pollinators = integer(0),
                         rank = integer(0), JEPCODE = character(0))
   
-  covered_pollinators <- focal_pollinators
+  pollinator_counts <- sapply(candidate_plants, function(plant) {
+    sum(state_interaction_matrix[plant, ] | focal_pollinators)
+  })
   
-  for (r in 1:20) {
-    if (length(candidate_plants) == 0) break
-    
-    new_pollinator_counts <- sapply(candidate_plants, function(plant) {
-      sum(state_interaction_matrix[plant, ] & !covered_pollinators)
-    })
-    
-    if (max(new_pollinator_counts) == 0) break
-    
-    best_idx   <- which.max(new_pollinator_counts)
-    best_plant <- candidate_plants[best_idx]
-    best_count <- new_pollinator_counts[best_idx]
-    
-    covered_pollinators <- covered_pollinators | state_interaction_matrix[best_plant, ]
-    candidate_plants    <- setdiff(candidate_plants, best_plant)
-    
+  solo_counts <- rowSums(state_interaction_matrix[candidate_plants, , drop = FALSE])
+  ranked <- order(pollinator_counts, solo_counts, decreasing = TRUE)
+  top20  <- candidate_plants[ranked[1:min(20, length(candidate_plants))]]
+  counts <- pollinator_counts[ranked[1:min(20, length(candidate_plants))]]
+  
+  # Build results dataframe with the top 20 companion plants and their metrics
+  for (r in seq_along(top20)) {
     results <- rbind(results, data.frame(
-      focal_plant     = focal_plant,
-      companion_plant = best_plant,
-      added_pollinators = best_count,
-      total_pollinators = sum(covered_pollinators),
-      rank   = r,
-      JEPCODE = "California"
+      focal_plant       = focal_plant,
+      companion_plant   = top20[r],
+      # Pollinators added beyond what the focal plant already supports alone
+      added_pollinators = counts[r] - sum(focal_pollinators),
+      total_pollinators = counts[r],
+      rank              = r,
+      JEPCODE           = "California"
     ))
   }
   
@@ -342,50 +336,50 @@ process_state_focal_plant <- function(focal_plant,
 }
 
 #### Run state-level companions for NECTAR interactions ####
-state_nectar_data <- prepare_state_data(interaction_data_nectar)
+state_visitsFlowersOf_data <- prepare_state_data(interaction_data_visitsFlowersOf)
 
-state_companion_nectar_results <- foreach(
-  fp = state_nectar_data$all_plants,
+state_companion_visitsFlowersOf_results <- foreach(
+  fp = state_visitsFlowersOf_data$all_plants,
   .packages = c("dplyr", "tidyr"),
   .combine  = rbind,
   .export   = c("find_community_sharing_plants", "process_state_focal_plant",
-                "state_nectar_data")
+                "state_visitsFlowersOf_data")
 ) %dopar% {
   process_state_focal_plant(
     focal_plant             = fp,
-    state_interaction_matrix = state_nectar_data$interaction_matrix,
-    state_community_matrix  = state_nectar_data$community_matrix,
-    state_eco_matrix        = state_nectar_data$eco_matrix,
-    all_plants              = state_nectar_data$all_plants
+    state_interaction_matrix = state_visitsFlowersOf_data$interaction_matrix,
+    state_community_matrix  = state_visitsFlowersOf_data$community_matrix,
+    state_eco_matrix        = state_visitsFlowersOf_data$eco_matrix,
+    all_plants              = state_visitsFlowersOf_data$all_plants
   )
 }
 
 #### Run state-level companions for HOST interactions ####
-state_host_data <- prepare_state_data(interaction_data_host)
+state_hasHost_data <- prepare_state_data(interaction_data_hasHost)
 
-state_companion_host_results <- foreach(
-  fp = state_host_data$all_plants,
+state_companion_hasHost_results <- foreach(
+  fp = state_hasHost_data$all_plants,
   .packages = c("dplyr", "tidyr"),
   .combine  = rbind,
   .export   = c("find_community_sharing_plants", "process_state_focal_plant",
-                "state_host_data")
+                "state_hasHost_data")
 ) %dopar% {
   process_state_focal_plant(
     focal_plant             = fp,
-    state_interaction_matrix = state_host_data$interaction_matrix,
-    state_community_matrix  = state_host_data$community_matrix,
-    state_eco_matrix        = state_host_data$eco_matrix,
-    all_plants              = state_host_data$all_plants
+    state_interaction_matrix = state_hasHost_data$interaction_matrix,
+    state_community_matrix  = state_hasHost_data$community_matrix,
+    state_eco_matrix        = state_hasHost_data$eco_matrix,
+    all_plants              = state_hasHost_data$all_plants
   )
 }
 
 #### Combine ecoregion and state results and save ####
-all_companion_nectar_results <- rbind(all_companion_nectar_results, state_companion_nectar_results)
-all_companion_host_results   <- rbind(all_companion_host_results, state_companion_host_results)
+all_companion_visitsFlowersOf_results <- rbind(all_companion_visitsFlowersOf_results, state_companion_visitsFlowersOf_results)
+all_companion_hasHost_results   <- rbind(all_companion_hasHost_results, state_companion_hasHost_results)
 
 # Stop the cluster
 stopCluster(cl)
 
 # Write detailed results to CSV
-write.csv(all_companion_nectar_results, "Data_Calscape/Companion_Plants/community_constrained_companions_nectar.csv", row.names = FALSE)
-write.csv(all_companion_host_results, "Data_Calscape/Companion_Plants/community_constrained_companions_host.csv", row.names = FALSE)
+write.csv(all_companion_visitsFlowersOf_results, "Data_Calscape/Companion_Plants/community_constrained_companions_visitsFlowersOf.csv", row.names = FALSE)
+write.csv(all_companion_hasHost_results, "Data_Calscape/Companion_Plants/community_constrained_companions_hasHost.csv", row.names = FALSE)

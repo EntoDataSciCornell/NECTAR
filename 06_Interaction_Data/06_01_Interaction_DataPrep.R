@@ -10,6 +10,11 @@ library(bdc)
 library(BeeBDC)
 library(tidyr)
 
+# Gnverifier for taxonomic harm
+source("Code/99_Supporting/name_harmonization.R")
+# Define gnverifier path
+gnverifier_path <- ""
+
 ##### GloBI #####
 
 # download "interactions.tsv.gz" from https://www.globalbioticinteractions.org/data
@@ -49,7 +54,7 @@ system(paste("bash", shQuote(script_path)))
 
 #read in the GBIF data
 globi <- fread(
-  'Data_Raw/interactions/globi/globi_filtered_unique.tsv',
+  'Data_Raw/Interactions/globi/globi_filtered_unique.tsv',
   sep = "\t",
   quote = ""
 )
@@ -236,10 +241,8 @@ caldwell$localityName = "California, USA"
 
 # Each records started with a search of species from our pollinators checklist
 
-setwd('Data_Raw/Interactions/DiscoverLife/species_records_raw')
-
 # List all RDS files in the folder
-rds_files <- list.files(pattern = "\\.rds$")
+rds_files <- list.files(path = "Data_Raw/Interactions/discover_life/species_records_raw", pattern = "\\.rds$", full.names = T)
 
 # Initialize an empty list to store data from each RDS file
 records_list <- list()
@@ -254,9 +257,10 @@ for (file in rds_files) {
   species_df <- do.call(bind_rows, lapply(species_data, as.data.frame))
   
   #prepare and add the record title (species) as a column
-  file_name = gsub("\\+", " ", file)
+  file_name <- basename(file)
+  file_name <- gsub("\\+", " ", file_name)
   file_name <- gsub('"|\\.rds', "", file_name)
-  species_df$recordScientificName = file_name
+  species_df$recordScientificName <- file_name
   
   # Add the data frame to the list
   records_list[[file]] <- species_df
@@ -340,7 +344,7 @@ dl = dl_cleaning %>%
 #record_id, id, basisOfRecord, collectionCode, collectionID, type, datasetName, ownerInstitutionCode, institutionCode, #record identifiers
 
 #### Big Book of Hymenoptera ####
-bigbook = read.csv('Data_Raw/Interactions/BigBook/bigBook_scraped_interactions.csv')
+bigbook = read.csv('Data_Raw/Interactions/bigbook/bigBook_scraped_interactions.csv')
 
 bigbook = bigbook %>%
   rename(
@@ -353,7 +357,7 @@ bigbook = bigbook %>%
 #for now leaving collectsPollenOf as separate interaction type
 
 #### Jared Fowler Pollen Specialist Bees ####
-fowler = read.csv('Data_Raw/Interactions/JarrodFowler/jarrodFowler_scraped_interactions.csv')
+fowler = read.csv('Data_Raw/Interactions/fowler/jarrodFowler_scraped_interactions.csv')
 
 fowler = fowler %>%
   rename(
@@ -363,7 +367,10 @@ fowler = fowler %>%
   distinct()
 
 #### Simon Doneski Butterfly Hostplants ####
-simon = read.csv('Data_Raw/Interactions/simon/simon.csv')
+simon = read_excel('Data_Raw/Interactions/simon/UNR_UNM hostDatabase.xlsx')
+
+## Select only columns we need
+simon = simon[,c("butterflyFam", "SpScott1986", "SpNABA2.6", "spBOA", "spPelhamCatalog", "plantFamUpdated", "plantGenus", "plantSp", "subSpOrVar1", "subSpOrVar2", "Scientific.Name.Plant", "Location", "Scientific.Name.with.Author")]
 
 #convert to NA for coalesce
 simon[simon == ""] <- NA
@@ -392,6 +399,242 @@ simon <- simon %>%
 
 #add interactionTypeName
 simon$interactionTypeName = "hasHost"
+
+#### Shropshire + Tallamy ####
+
+### 1. Read in raw data
+# Read in Shropshire-Tallamy data from https://zenodo.org/records/17747343
+ShropshireTallamy <- read_excel('Data_Raw/Interactions/ShropshireTallamy2025/oo_1478226.xlsx', 
+                                sheet = "UDELep May 2025", skip = 1)
+
+### 2. Parse and clean Shropshire-Tallamy lepidopteran names
+# Parse lep names using bdc
+parse_names <- bdc_clean_names(
+  sci_names = ShropshireTallamy$SPECIES_COMPLETE_BINOMIAL_NOMENCLATURE, 
+  save_outputs = FALSE
+) %>% unique()
+
+# Join parsed names back
+ShropshireTallamy <- left_join(
+  ShropshireTallamy, parse_names,
+  by = join_by("SPECIES_COMPLETE_BINOMIAL_NOMENCLATURE" == "scientificName")
+)
+
+### 3. Function to expand a column split on whitespace (as in host families and genera cols)
+expand_host_col <- function(df, col, new_col) {
+  df %>%
+    mutate("{new_col}" := str_split(.data[[col]], "\\s+")) %>%
+    unnest(!!sym(new_col)) %>%
+    filter(!is.na(.data[[new_col]]), 
+           .data[[new_col]] != "", 
+           .data[[new_col]] != "NA",
+           .data[[new_col]] != ".none_specified.")
+}
+
+### 4. Expand and clean host genera
+# Split host genera col, clean bracket annotations and synonyms
+ShropshireTallamy_long_genera <- ShropshireTallamy %>%
+  expand_host_col("HOST_GENERA", "HOST_GENERA_split") %>%
+  mutate(
+    # extract notes from brackets e.g. [plant], [=Synonym]
+    HOST_GENUS_NOTE  = str_extract(HOST_GENERA_split, "(?<=\\[).*?(?=\\])"),
+    # only keep note if it doesn't start with = or &
+    HOST_GENUS_NOTE  = if_else(str_detect(HOST_GENUS_NOTE, "^[=&]"), NA_character_, HOST_GENUS_NOTE),
+    # remove bracket content, synonyms, and stray brackets
+    HOST_GENUS_CLEAN = str_remove_all(HOST_GENERA_split, "\\[.*?\\]|=\\w+|[\\[\\]]"),
+    NON_PLANT_FLAG   = !is.na(HOST_GENUS_NOTE)
+  ) %>%
+  # remove non-plant hosts and non-butterfly records
+  filter(HOST_GENUS_CLEAN != "",
+         HOST_GENUS_NOTE %in% c(NA, "plant")) %>%
+  rename(sourceTaxonName   = names_clean,
+         targetTaxonName   = HOST_GENUS_CLEAN) %>%
+  dplyr::select(sourceTaxonName, LEP_FAMILY, targetTaxonName, HOST_FAMILIES)
+
+### 5. Harmonize plant genera via GNVerifier
+# Get unique plant names for harmonization
+names_plants <- ShropshireTallamy_long_genera %>% pull(targetTaxonName) %>% unique()
+
+# Harmonize names
+names_harm_plants <- harmonize_names(
+  names           = names_plants,
+  higher_tax      = "Plantae",
+  names_file      = "Temp/names_interactions_plants.tsv",
+  names_harm_file = "Temp/names_harmonized_interactions_plants.tsv",
+  gnv_path = gnverifier_path
+)
+names_harm_plants_withHigher <- update_taxonomy(names_harm_plants, tax = "plant")
+
+# Join harmonized names back to get inferred family per genus
+ShropshireTallamy_long_genera <- left_join(
+  ShropshireTallamy_long_genera, names_harm_plants_withHigher,
+  by = join_by("targetTaxonName" == "ScientificName")
+) %>%
+  rename(plantFamInferred  = family,
+         originalNamePlant = targetTaxonName) %>%
+  mutate(plantGenus = str_extract(names_harm, "^\\S+")) %>%
+  dplyr::select(-names_harm)
+
+### 6. Expand host families and find those not covered by genera
+# Split host families col, clean bracket annotations
+ShropshireTallamy_long_fams <- ShropshireTallamy %>%
+  expand_host_col("HOST_FAMILIES", "HOST_FAMILY_split") %>%
+  mutate(
+    HOST_FAMILY_CLEAN = str_remove_all(HOST_FAMILY_split, "\\[.*?\\]|=\\w+|[\\[\\]]")
+  ) %>%
+  # remove non-butterfly records
+  filter(HOST_FAMILY_CLEAN != "") %>%
+  rename(sourceTaxonName = names_clean) %>%
+  dplyr::select(sourceTaxonName, LEP_FAMILY, HOST_FAMILY_CLEAN)
+
+# Get families already represented by genus-level data
+fams_from_genera <- ShropshireTallamy_long_genera %>%
+  dplyr::select(sourceTaxonName, LEP_FAMILY, plantFamInferred) %>%
+  filter(!is.na(plantFamInferred)) %>%
+  distinct()
+
+# Keep only host family entries not already covered by a genus row
+fam_only_rows <- ShropshireTallamy_long_fams %>%
+  anti_join(fams_from_genera, 
+            by = join_by("sourceTaxonName", 
+                         "LEP_FAMILY", 
+                         "HOST_FAMILY_CLEAN" == "plantFamInferred")) %>%
+  mutate(plantGenus        = NA_character_,
+         plantFamInferred  = HOST_FAMILY_CLEAN,
+         originalNamePlant = NA_character_) %>%
+  dplyr::select(-HOST_FAMILY_CLEAN)
+
+# Clean a single plant name from references
+clean_ref_name <- function(x) {
+  x %>%
+    # remove bracket content entirely (synonyms and notes)
+    str_remove_all("\\[.*?\\]") %>%
+    # remove "sp." to reduce to genus level
+    str_remove_all("\\s+sp\\.?$") %>%
+    str_squish()
+}
+
+# Parse HOST_references into long format with one row per butterfly x citation x plant name
+refs_parsed <- ShropshireTallamy %>%
+  filter(!is.na(HOST_references)) %>%
+  rename(sourceTaxonName = names_clean) %>%
+  dplyr::select(sourceTaxonName, LEP_FAMILY, HOST_references) %>%
+  mutate(sourceTaxonName = str_extract(sourceTaxonName, "^\\S+\\s+\\S+")) %>%
+  rename(HOST_references_full = HOST_references) %>%
+  mutate(citation_chunk = str_split(HOST_references_full, ";\\s*")) %>%
+  unnest(citation_chunk) %>%
+  filter(citation_chunk != "") %>%
+  mutate(
+    # remove bracket notes about the citation itself e.g. [for Achyra similalis Guenee]
+    # and captive reared notes e.g. & [captive reared] (...)
+    citation_chunk = str_remove_all(citation_chunk, "\\[for[^\\]]*\\]"),
+    citation_chunk = str_remove_all(citation_chunk, "&\\s*\\[[^\\]]*\\]\\s*\\([^)]*\\)"),
+    citation       = str_trim(str_extract(citation_chunk, "^[^(]+")),
+    # extract only the FIRST parenthetical to avoid greedy matching issues
+    plants_raw     = str_extract(citation_chunk, "(?<=\\()[^)]+(?=\\))")
+  ) %>%
+  filter(!is.na(plants_raw)) %>%
+  mutate(
+    # remove qualifying prefixes before colon e.g. "Rosaceae host plants: " or "Eurasian records: "
+    plants_raw = str_remove(plants_raw, "^[^,)]+:\\s*")
+  ) %>%
+  mutate(plantName_raw = str_split(plants_raw, ",\\s*|\\s*&\\s*")) %>%
+  unnest(plantName_raw) %>%
+  mutate(
+    plantName_raw   = str_remove(plantName_raw, "^\\w+\\s+(?=[A-Z])"),
+    plantName_clean = clean_ref_name(plantName_raw),    n_words          = str_count(plantName_clean, "\\S+"),
+    plantGenus_ref   = str_extract(plantName_clean, "^\\S+"),
+    plantSp_ref      = if_else(n_words >= 2, word(plantName_clean, 2), NA_character_),
+    plantName_norank = str_remove_all(plantName_clean, "\\b(var|ssp|subsp|f)\\b\\.?\\s*"),
+    n_words_norank   = str_count(str_squish(plantName_norank), "\\S+"),
+    subSpOrVar1      = if_else(n_words_norank >= 3, word(str_squish(plantName_norank), 3), NA_character_),
+    subSpOrVar2      = if_else(n_words_norank >= 4, word(str_squish(plantName_norank), 4), NA_character_),
+    is_family_ref    = str_detect(plantName_clean, "aceae$|idae$"),
+    is_species_ref   = n_words >= 2
+  ) %>%
+  filter(
+    plantName_clean != "",
+    # remove individual names that are family-level
+    !is_family_ref,
+    # genus must start with a capital letter
+    str_detect(plantGenus_ref, "^[A-Z]")
+  ) %>%
+  dplyr::select(-n_words, -plantName_norank, -n_words_norank) %>%
+  distinct()
+
+### 6. Combine genera rows and family-only rows
+ShropshireTallamy_cleanPlants <- bind_rows(
+  ShropshireTallamy_long_genera %>% dplyr::select(-HOST_FAMILIES),
+  fam_only_rows
+) %>%
+  rename(plantFamUpdated = plantFamInferred)
+
+### Join species-level reference data
+# For each genus-level row, find matching species from refs_parsed
+# A match is when plantGenus_ref == plantGenus for the same butterfly species
+species_from_refs <- ShropshireTallamy_cleanPlants %>%
+  inner_join(
+    refs_parsed %>% filter(is_species_ref) %>%
+      dplyr::select(sourceTaxonName, LEP_FAMILY, plantGenus_ref,
+                    plantName_clean, plantSp_ref, subSpOrVar1, subSpOrVar2,
+                    citation, HOST_references_full),
+    by = join_by("sourceTaxonName", "LEP_FAMILY", "plantGenus" == "plantGenus_ref")
+  ) %>%
+  rename(plantSp = plantSp_ref,
+         citation_ref = citation) %>%
+  # drop full binomial since we now have it split into cols
+  dplyr::select(-plantName_clean)
+
+# genus-level rows that have at least one species match get replaced by species rows
+genera_with_species <- species_from_refs %>%
+  dplyr::select(sourceTaxonName, LEP_FAMILY, plantGenus) %>%
+  distinct()
+
+# keep genus rows only when no species were found for that genus
+genus_only_rows <- ShropshireTallamy_cleanPlants %>%
+  anti_join(genera_with_species,
+            by = join_by("sourceTaxonName", "LEP_FAMILY", "plantGenus")) %>%
+  mutate(plantSp     = NA_character_,
+         subSpOrVar1  = NA_character_,
+         subSpOrVar2  = NA_character_,
+         citation_ref      = NA_character_,
+         HOST_references_full = NA_character_)
+
+# assign citation to genus-only and family-only rows when only one citation 
+# exists for that butterfly AND that citation mentions the same genus
+single_citation <- refs_parsed %>%
+  dplyr::select(sourceTaxonName, LEP_FAMILY, citation, HOST_references_full, plantGenus_ref) %>%
+  distinct() %>%
+  group_by(sourceTaxonName, LEP_FAMILY, plantGenus_ref) %>%
+  filter(n_distinct(citation) == 1) %>%
+  slice(1) %>%
+  ungroup() %>%
+  rename(citation_ref = citation)
+
+genus_only_rows <- genus_only_rows %>%
+  dplyr::select(-citation_ref, -HOST_references_full) %>%
+  left_join(single_citation %>% 
+              dplyr::select(sourceTaxonName, LEP_FAMILY, 
+                            plantGenus_ref, citation_ref, HOST_references_full),
+            by = join_by("sourceTaxonName", "LEP_FAMILY", "plantGenus" == "plantGenus_ref"))
+
+### 8. Combine species rows and genus-only rows
+ShropshireTallamy_cleanPlants_withSp <- bind_rows(
+  species_from_refs,
+  genus_only_rows
+)
+
+### 9. Formatting
+shropTall = ShropshireTallamy_cleanPlants_withSp %>%
+  mutate(targetTaxonName = if_else(is.na(plantSp), plantGenus, paste(plantGenus, plantSp)),
+         interactionTypeName = "hasHost") %>%
+  rename(sourceTaxonFamilyName = LEP_FAMILY,
+         targetTaxonFamilyName = plantFamUpdated) %>%
+  dplyr::select(sourceTaxonName, sourceTaxonFamilyName, targetTaxonName, targetTaxonFamilyName, interactionTypeName) %>%
+  # Remove family level records for now
+  filter(!is.na(sourceTaxonName), 
+         !is.na(targetTaxonName)) %>%
+  unique()
 
 ##### CropPoll #####
 
@@ -437,7 +680,6 @@ crop_poll = crop_poll %>%
   distinct()
 
 ##### Crop Common Names #####
-source("Code/99_Supporting/name_harmonization.R")
 
 # Crop common names: partly from manual research and partly from
 # https://www.fao.org/fileadmin/templates/ess/documents/world_census_of_agriculture/appendix4_r7.pdf
@@ -453,7 +695,8 @@ names_harm_crops <- harmonize_names(
   names = unique(crop_names_parsed$names_clean),
   higher_tax = "Plantae",
   names_file = "Temp/names_crops.tsv",
-  names_harm_file = "Temp/names_harmonized_crops.tsv"
+  names_harm_file = "Temp/names_harmonized_crops.tsv",
+  gnv_path = gnverifier_path
 )
 
 # Merge with original crop names
@@ -482,8 +725,9 @@ dl$source       <- "dl"
 bigbook$source  <- "bigbook"
 fowler$source   <- "fowler"
 crop_poll$source <- "cropPoll"
+shropTall$source <- "ShropTall"
 
-dfs <- list(globi, hosts, caldwell, simon, dl, bigbook, fowler, crop_poll)
+dfs <- list(globi, hosts, caldwell, simon, dl, bigbook, fowler, crop_poll, shropTall)
 
 dfs_chr <- lapply(dfs, function(x) {
   x %>%
@@ -503,7 +747,6 @@ interactions = interactions %>%
 # write.csv(cropNames_for_harm, "crop_names.csv", row.names = F)
 
 #### Harmonize Names ####
-source("Code/99_Supporting/name_harmonization.R")
 
 # Clean names with bdc
 pollinator_names <- bdc_clean_names(
@@ -529,9 +772,6 @@ interactions <- interactions %>%
 names_plants <- plant_names %>% pull(names_clean) %>% unique()
 names_animals <- pollinator_names %>% pull(names_clean) %>% unique()
 
-# Define gnverifier path
-gnverifier_path <- "/usr/local/bin/"
-
 # Harmonize names
 names_harm_plants <- harmonize_names(
   names = names_plants,
@@ -540,6 +780,8 @@ names_harm_plants <- harmonize_names(
   names_harm_file = "Temp/names_harmonized_interactions_plants.tsv",
   gnv_path = gnverifier_path
 )
+# save all harmonized names
+names_harm_plants_all <- names_harm_plants
 
 names_harm_animals <- harmonize_names(
   names = names_animals,
@@ -594,13 +836,13 @@ interactions_harm <- interactions %>%
   rename(sourceTaxonName_harm = names_harm) %>%
   dplyr::select(-c(Kind, SortScore, MatchType, EditDistance,
                    MatchedName, MatchedCanonical, TaxonId, CurrentName,
-                   DataSourceId, DataSourceTitle, ClassificationPath, Error, Synonym)) %>%
+                   DataSourceId, DataSourceTitle, ClassificationPath, Error)) %>%
   left_join(names_harm_plants,
             by = c("targetTaxonName_clean" = "ScientificName")) %>%
   rename(targetTaxonName_harm = names_harm) %>%
   dplyr::select(-c(Kind, SortScore, MatchType, EditDistance,
                    MatchedName, MatchedCanonical, TaxonId, CurrentName,
-                   DataSourceId, DataSourceTitle, ClassificationPath, Error, Synonym))
+                   DataSourceId, DataSourceTitle, ClassificationPath, Error))
 
 # When plant is a crop, use crop harmonized name
 interactions_harm <- interactions_harm %>%
@@ -666,6 +908,26 @@ interactions_harm = interactions_harm %>%
 
 #### FOR OCCUPANCY MODEL, FIGURE OUT DUPLICATED INTERACTIONS ####
 
+### Remove Gymnosperm flower visitation interactions
+gymnosperm_orders <- c(
+  "Ginkgoales", "Cycadales", "Araucariales",
+  "Cupressales", "Pinales", "Ephedrales",
+  "Welwitschiales", "Gnetales"
+)
+
+gymnosperm_genera <- names_harm_plants_all %>%
+  filter(
+    !is.na(names_harm),
+    str_detect(ClassificationPath, paste(gymnosperm_orders, collapse = "|"))
+  ) %>%
+  mutate(genus = word(names_harm, 1)) %>%
+  distinct(genus)
+
+interactions_harm <- interactions_harm %>%
+  filter(!(targetTaxonGenusName %in% gymnosperm_genera$genus & interactionTypeName == "visitsFlowersOf"),
+         !(targetTaxonOrderName %in% gymnosperm_orders & interactionTypeName == "visitsFlowersOf")
+  )
+
 #Save outputs
 
 write.csv(interactions_harm, "Temp/ints_all_clean.csv", row.names = F)
@@ -677,10 +939,24 @@ rm(list = ls(all = TRUE))
 # Load data
 
 #List of all species that we have SDMs for
-sdm_data = read.csv('Data_Clean/SDMs/SDM_Inputs/sdm_data.csv')
+sdm_data = read.csv('Data_Raw/SDM_input/sdm_data.csv')
 
 # All interactions
 ints = read.csv("Temp/ints_all_clean.csv")
+
+# Remove TaxonomicStatus.x and TaxonomicStatus.y
+ints <- ints %>%
+  select(-c(TaxonomicStatus.x, TaxonomicStatus.y))
+
+# Clean decimalLatitude and decimalLongitude
+bad_lat <- grepl("^[NSEWnsew]", ints$decimalLatitude)
+bad_lon <- grepl("^[NSEWnsew]", ints$decimalLongitude)
+
+ints$decimalLatitude[bad_lat] <- NA
+ints$decimalLongitude[bad_lon] <- NA
+
+ints$decimalLatitude <- as.numeric(ints$decimalLatitude)
+ints$decimalLongitude <- as.numeric(ints$decimalLongitude)
 
 # Gather lists of genera in the sdm pollinators and plants
 sdm_lower = filter(sdm_data, taxon == "plants")
@@ -886,6 +1162,7 @@ ints_leps_non_confirmed = filter(ints_leps_non_confirmed, !(interactionTypeName 
 ints_leps_non_confirmed = ints_leps_non_confirmed %>%
   distinct()
 
+
 #Save full versions 
 write.csv(ints_clean, "Data_Clean/Interactions/ints_final_clean_full.csv", row.names = F)
 write.csv(ints_clean_withCrops, "Data_Clean/Interactions/ints_final_clean_withCrops_full.csv", row.names = F)
@@ -893,7 +1170,7 @@ write.csv(ints_leps_non_confirmed, "Data_Clean/Interactions/int_leps_unconfirmed
 
 #Create and save abbreviated versions
 ints_clean_slim <- ints_clean %>%
-  select(
+  dplyr::select(
     higherGenus, sourceTaxonName_harm, interactionTypeName,
     lowerGenus, targetTaxonName_harm,
     decimalLatitude, decimalLongitude, localityName
@@ -902,7 +1179,7 @@ ints_clean_slim <- ints_clean %>%
     sourceTaxonGenusName = higherGenus,
     targetTaxonGenusName = lowerGenus
   ) %>%
-  mutate(across(everything(), ~ na_if(., ""))) %>%   # convert "" → NA
+  mutate(across(where(is.character), ~ na_if(., ""))) %>%   # convert "" → NA
   distinct()
 
 ints_clean_withCrops_slim <- ints_clean_withCrops %>%
@@ -915,10 +1192,92 @@ ints_clean_withCrops_slim <- ints_clean_withCrops %>%
     sourceTaxonGenusName = higherGenus,
     targetTaxonGenusName = lowerGenus
   ) %>%
-  mutate(across(everything(), ~ na_if(., ""))) %>%   # convert "" → NA
+  mutate(across(where(is.character), ~ na_if(., ""))) %>%   # convert "" → NA
   distinct()
 
 # save slim versions
 write.csv(ints_clean_slim, "Data_Clean/Interactions/ints_final_clean_slim.csv", row.names = F)
 write.csv(ints_clean_withCrops_slim, "Data_Clean/Interactions/ints_final_clean_withCrops_slim.csv", row.names = F)
 
+
+##### Check how many new interactions from other sources than globi #####
+# int datasets filtered
+globi_ints <- ints_clean_withCrops %>%
+  filter(source == "globi") %>%
+  select(higherGenus, sourceTaxonName_harm, interactionTypeName,
+         lowerGenus, targetTaxonName_harm) %>%
+  unique()
+
+# species level
+nonglobi_ints <- ints_clean_withCrops %>%
+  filter(source != "globi") %>%
+  select(higherGenus, sourceTaxonName_harm, interactionTypeName,
+         lowerGenus, targetTaxonName_harm) %>%
+  unique()
+
+# compute shared/unique counts and percentages
+compare_interactions <- function(df1, df2, cols, label = "") {
+  
+  set1 <- df1 %>% select(all_of(cols)) %>% distinct()
+  set2 <- df2 %>% select(all_of(cols)) %>% distinct()
+  
+  shared     <- dplyr::intersect(set1, set2)
+  unique_1   <- dplyr::setdiff(set1, set2)
+  unique_2   <- dplyr::setdiff(set2, set1)
+  total_union <- dplyr::union(set1, set2)
+  
+  n_shared   <- nrow(shared)
+  n_unique_1 <- nrow(unique_1)
+  n_unique_2 <- nrow(unique_2)
+  n_total    <- nrow(total_union)
+  
+  tibble::tibble(
+    level              = label,
+    n_source1           = nrow(set1),
+    n_source2           = nrow(set2),
+    n_union            = n_total,
+    n_shared           = n_shared,
+    n_unique_source1   = n_unique_1,
+    n_unique_source2   = n_unique_2,
+    pct_shared_of_union      = n_shared / n_total * 100,
+    pct_unique_source1_of_union = n_unique_1 / n_total * 100,
+    pct_unique_source2_of_union = n_unique_2 / n_total * 100,
+    pct_of_source1_shared = n_shared / nrow(set1) * 100,
+    pct_of_source2_shared = n_shared / nrow(set2) * 100
+  )
+}
+
+# species level (source-target-interactionType combo)
+species_cols <- c("sourceTaxonName_harm", "interactionTypeName", "targetTaxonName_harm")
+
+species_comparison <- compare_interactions(
+  globi_ints, nonglobi_ints,
+  cols = species_cols,
+  label = "species"
+)
+
+# genus level
+genus_globi_ints <- ints_clean_withCrops %>%
+  filter(source == "globi") %>%
+  select(higherGenus, interactionTypeName, lowerGenus) %>%
+  unique()
+
+genus_nonglobi_ints <- ints_clean_withCrops %>%
+  filter(source != "globi") %>%
+  select(higherGenus, interactionTypeName, lowerGenus) %>%
+  unique()
+
+genus_cols <- c("higherGenus", "interactionTypeName", "lowerGenus")
+
+genus_comparison <- compare_interactions(
+  genus_globi_ints, genus_nonglobi_ints,
+  cols = genus_cols,
+  label = "genus"
+)
+
+# combine into one summary table
+overlap_summary <- bind_rows(species_comparison, genus_comparison)
+overlap_summary
+
+
+# genus only level

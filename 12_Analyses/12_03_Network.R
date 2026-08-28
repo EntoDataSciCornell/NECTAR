@@ -335,3 +335,56 @@ ggsave("Figures/networks/CaRF_complimentary.pdf",
        height = 50, 
        units = "mm",
        device = cairo_pdf)
+
+
+
+#### Taxon pie charts: % of interactions by pollinator taxon ####
+
+# Raw (observed) flower visitation interactions, by taxon
+raw_taxon_summary <- interactions_nectar_CA %>%
+  left_join(tax %>% mutate(genus = word(genus_species, 1, 1)), by = c("sourceTaxonGenusName" = "genus")) %>%
+  distinct(sourceTaxonName_harm, targetTaxonName_harm, taxon) %>%
+  count(taxon, name = "n") %>%
+  mutate(
+    taxon_label = tools::toTitleCase(taxon),
+    percentage = round(n / sum(n) * 100, 1)
+  )
+
+# Predicted flower visitation interactions, by taxon
+predicted_taxon_summary <- predicted_interactions_filtered %>%
+  dplyr::select(sourceTaxonName_harm, targetTaxonName_harm, sourceTaxonType) %>%
+  distinct() %>%
+  count(sourceTaxonType, name = "n") %>%
+  mutate(
+    taxon_label = tools::toTitleCase(sourceTaxonType),
+    percentage = round(n / sum(n) * 100, 1)
+  )
+
+taxon_colors <- c(
+  "Bees" = "#FFCC00",
+  "Butterflies" = "#E69190",
+  "Moths" = "#BD9ECD",
+  "Hoverflies" = "#F76700",
+  "Hummingbirds" = "#52A273"
+)
+
+plot_taxon_pie <- function(data) {
+  ggplot(data, aes(x = "", y = n, fill = taxon_label)) +
+    geom_col(color = "white", linewidth = 0.5) +
+    coord_polar(theta = "y", start = 0) +
+    scale_fill_manual(name = "Taxon", values = taxon_colors) +
+    theme_void() +
+    theme(
+      plot.subtitle = element_text(size = 10, hjust = 0.5),
+      legend.position = "bottom"
+    )
+}
+
+raw_taxon_pie <- plot_taxon_pie(raw_taxon_summary)
+predicted_taxon_pie <- plot_taxon_pie(predicted_taxon_summary)
+
+ggsave("Figures/taxon_pie/raw_taxon_pie.png", raw_taxon_pie, width = 6, height = 6, dpi = 300)
+ggsave("Figures/taxon_pie/predicted_taxon_pie.png", predicted_taxon_pie, width = 6, height = 6, dpi = 300)
+
+ggsave("Figures/taxon_pie/raw_taxon_pie.pdf", raw_taxon_pie, width = 6, height = 6, device = cairo_pdf)
+ggsave("Figures/taxon_pie/predicted_taxon_pie.pdf", predicted_taxon_pie, width = 6, height = 6, device = cairo_pdf)

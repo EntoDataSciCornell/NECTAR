@@ -30,7 +30,7 @@ for (taxon in taxon_folders) {
   
   # Build path to continuous sdm folder
   continuous_path <- file.path(base_path, taxon, "continuous")
-    
+  
   # Get all files in continuous folder
   all_files <- list.files(continuous_path, pattern = "\\.tif$", full.names = FALSE)
   
@@ -79,6 +79,9 @@ pollinator_species <- checklist_prediction[checklist_prediction$taxon != "plants
 # read in interaction observations
 ints <- read.csv("Data_Clean/Interactions/ints_final_clean_slim.csv")
 
+### Temporary until we model pollen interactions seperately
+ints$interactionTypeName[ints$interactionTypeName == "collectsPollenOf"] <- "visitsFlowersOf"
+
 # get unique pollinator species-plant genus interactions for flower visitation ints
 ints_pol_plantgenera <- ints %>%
   # filter for only flower visitation|
@@ -92,7 +95,7 @@ ints_pol_plantgenera <- ints %>%
 # now filter for only plant genera and pol species in checklist
 ints_pol_plantgenera_checklist <- ints_pol_plantgenera %>%
   filter(sourceTaxonName_harm %in% pollinator_species$genus_species &
-         targetTaxonGenusName %in% plant_species$genus) %>%
+           targetTaxonGenusName %in% plant_species$genus) %>%
   unique()
 
 # now expand for all plant species in each genus to get pairwise species we want to predict over
@@ -289,7 +292,7 @@ process_chunk_spatialOverlap <- function(row_ids) {
     # Check if both species have SDMs
     if (pollinator_sp %in% names(pollinator_sdms) && 
         plant_sp %in% names(plant_sdms)) {
-
+      
       # Get individual SDMs
       pol_sdm <- pollinator_sdms[[pollinator_sp]]
       plant_sdm <- plant_sdms[[plant_sp]]
