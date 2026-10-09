@@ -6,7 +6,10 @@ NECTAR is a reproducible framework for predicting large-scale plant-pollinator i
 This repository includes the code required to reproduce the outputs of Baiotto and Cosma et al. (2026), organized so that the framework can be adapted to other source data and applications with moderate effort (see Organization below).
 
 # Organization
-NECTAR is organized into 12 steps that are intended to be completed in order. The results presented in Baiotto and Cosma generally rely on the code in steps 01-07 and 12 and skip steps 08-11, which are various data summary/aggregation steps to support the implementation of NECTAR on the California Native Plant Societies' Calscape Pollinator Companion tool (beta version available at: https://pollinators.calscape.org/pollinator-companion/welcome).
+
+NECTAR's code is organized into 12 steps that are intended to be completed in order. The results presented in Baiotto and Cosma generally rely on the code in steps 01-07 and 12 and skip steps 08-11, which are various data summary/aggregation steps to support the implementation of NECTAR on the California Native Plant Societies' Calscape Pollinator Companion tool (beta version available at: https://pollinators.calscape.org/pollinator-companion/welcome).
+
+NECTAR is designed to be executed under a general project directory with the code placed in a `Code` subfolder. The code reads input data from `Data_Raw` and places cleaned datasets in `Data_Clean` and `Data_Calscape`, intermediate files in `Temp` and `logs`, and other outputs in `Figures` and `Tables`.
 
 📁 01_Data_Download - Automated data download (e.g., for plant occurrence and supporting environmental/ecological data from Calflora) and descriptions for manual data download and very basic cleaning/formatting.
 
